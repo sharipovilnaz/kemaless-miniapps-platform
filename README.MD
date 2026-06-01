@@ -1,81 +1,268 @@
-Ядро Admin AI Copilot (Интеграция Spring AI)
+# MiniApp Platform
 
-Обучаем платформу думать и помнить.
+Платформа для централизованного управления и мониторинга miniapp, а также безопасного запуска miniapp из host-приложений через SSO.
 
-    Зависимости:
+В этом README описаны две части проекта:
 
-        Добавить в pom.xml админки стартеры spring-ai-openai и spring-ai-pgvector.
+- `core` - backend платформы MiniApp на Spring Boot;
+- `miniapp-sdk` - Java SDK для backend-сервиса host-приложения.
 
-    JPA и Репозитории:
+## Какую проблему решает проект
 
-        Создать Entity-классы для таблиц сессий и сообщений (AiChatSessionEntity, AiChatMessageEntity).
+Обычная интеграция miniapp с host-приложением быстро приводит к проблемам:
 
-        Написать Spring Data репозитории для извлечения истории по sessionId.
+- host-приложение вынуждено передавать пользовательские данные и роли напрямую в miniapp;
+- miniapp часто получает слишком много доверия к данным из браузера;
+- logout из host-приложения не отзывает miniapp-сессии;
+- разные host-приложения используют разные роли, и miniapp приходится знать чужие role codes;
+- сложно централизованно проверять доступ, аудит и lifecycle токенов.
 
-    Подключение Памяти (ChatMemory):
+Платформа решает это через модель `Platform -> Realm -> Realm Client -> MiniApp`.
 
-        Написать класс DatabaseChatMemory, реализующий интерфейс Spring AI ChatMemory.
+Host backend авторизуется в платформе по `realmCode + clientId + clientSecret`, получает host service token и вызывает launch endpoint.
+Платформа проверяет realm, client, miniapp, role mapping и access policy, затем выдает короткоживущий одноразовый launch ticket.
+В URL miniapp уходит только ticket. Miniapp обменивает ticket на свою miniapp-сессию через SSO exchange и получает собственные access/refresh tokens.
 
-        Реализовать логику: при запросе доставать последние N сообщений из БД, а при ответе LLM — сохранять их обратно с подсчетом токенов.
+В итоге подключение внешнего приложения происходит 1 раз, а количество добавлений miniapp - неограничено.
 
-Этап 4: Интеллектуальные навыки (Agentic AI)
+## Требования
 
-Даем нейросети доступ к реальным данным платформы.
+- Java 21
+- Docker с Docker Compose
+- Maven wrapper используется из репозитория: `mvnw` / `mvnw.cmd`
 
-    Инструменты (Function Calling):
+## Запуск miniApp platform 
 
-        Написать @Bean Function<AuditRequest, List<AuditDto>> auditLogFetcherFunction.
+### 0. Клонировать репозиторий 
 
-        Снабдить метод детальной аннотацией @Description, чтобы LLM понимала, как доставать логи по realmCode.
+```bash
+git clone https://github.com/kemalthes/miniapp-platfrom.git
+```
 
-    Векторное хранилище (RAG):
+### 1. Подготовить `.env`
 
-        Настроить PgVectorStore.
+Минимально важные переменные:
 
-        (Опционально) Написать скрипт, который при старте приложения загружает в векторную базу описания всех зарегистрированных миниаппов.
+```env
+PLATFORM_ADMIN_USERNAME=admin
+PLATFORM_ADMIN_PASSWORD=strong-password
+PLATFORM_BACKEND_SECRET_KEY=very-long-secret-key-with-at-least-32-chars
 
-    Сборка Ассистента (Copilot Service):
+POSTGRES_DATABASE=platform_db
+POSTGRES_USERNAME=postgres
+POSTGRES_PASSWORD=postgres
+POSTGRES_PORT=15432
+```
 
-        Сконфигурировать ChatClient с жестким системным промптом (требование писать код mermaid.js для графов).
+При первом старте miniApp platform создаст root-пользователя из env. При повторном запуске пароль и роли root-пользователя не перетираются.
 
-        Подключить MessageChatMemoryAdvisor и функции.
+### 2. Собрать backend jar
 
-Этап 5: API и Связка с Фронтендом
+```bash
+cd core
+./mvnw clean package -DskipTests
+cd ..
+```
 
-Выводим AI Copilot наружу для UI.
+### 3. Запустить платформу через Docker Compose
 
-    Copilot REST API:
+```bash
+docker compose up --build
+```
 
-        Создать контроллер POST /api/admin/copilot/chat.
+По текущему `docker-compose.yml` сервис доступен на:
 
-        Входные данные: sessionId, text (сообщение админа).
+```text
+http://localhost:8080
+```
 
-        Выходные данные: текстовый ответ LLM.
+Admin UI и API находятся на одном host:
 
-    Медиа API (Мультимодальность):
+```text
+Admin UI: http://localhost:8080
+API:      http://localhost:8080/api
+```
 
-        Создать эндпоинт для загрузки скриншотов/аудио в MinIO.
+Данные для первого входа (если не переопределяли):
 
-        Настроить передачу ссылок на эти файлы в ChatClient (через объект Media).
+```text
+username: admin
+password: strong-password
+```
 
-Этап 6: Упаковка и Сквозное тестирование (Сборка для жюри)
+## Настройка Realm и MiniApp в платформе
 
-Доводим до состояния Single-Click Deploy.
+Перед использованием SDK нужно один раз подготовить данные в admin panel:
 
-    Сборка инфраструктуры:
+1. Войти в admin panel под root.
+2. Создать `Realm`, например `bank`.
+3. Сохранить выданные `clientId` и `clientSecret`.
+4. Создать realm roles, например `USER`, `PREMIUM_CLIENT`, `VIP`.
+5. Настроить role mappings:
 
-        Добавить сборку payment-miniapp в ваш Makefile (команда make all).
+```text
+External host role -> Realm role
+MB_PREMIUM         -> PREMIUM_CLIENT
+CARD_OWNER         -> USER
+BANK_VIP_2025      -> VIP
+```
 
-    Сценарий демо (Прогон):
+6. Создать или подключить MiniApp к Realm.
+7. Указать `entryUrl` miniapp, например:
 
-        Запустить платформу (make all).
+```text
+http://localhost:8091
+```
 
-        Хост (Сбербанк) получает тикет через ваш SDK.
+8. Настроить access policy:
 
-        Фронт переходит по launchUrl в Payment MiniApp.
+Пример в формате JSON:
+```json
+{
+  "accessType": "ROLE_BASED",
+  "roleMatchMode": "ANY",
+  "requiredRoles": ["PREMIUM_CLIENT", "VIP"]
+}
+```
 
-        Эмулируем ошибку доступа (специально обрезаем права).
+9. Опубликовать MiniApp.
 
-        Идем в Админку, открываем AI Copilot и пишем: "Почему 5 минут назад упал запуск payment-miniapp?".
+Важно: host-приложение отправляет свои external roles. Платформа сама маппит их в realm roles. Незамапленные роли не дают доступ.
 
-        Получаем ответ с деталями из логов и красивым графом Mermaid.
+## Установка miniapp-sdk
+
+SDK пока используется как локальный Maven artifact.
+
+PowerShell:
+
+```powershell
+cd miniapp-sdk
+.\mvnw.cmd clean install -DskipTests
+cd ..
+```
+
+Bash:
+
+```bash
+cd miniapp-sdk
+./mvnw clean install -DskipTests
+cd ..
+```
+
+После этого SDK можно подключить в Spring Boot backend host-приложения:
+
+```xml
+<dependency>
+    <groupId>com.kemaless</groupId>
+    <artifactId>miniapp-sdk</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+</dependency>
+```
+
+## Конфигурация SDK
+
+SDK использует Spring Boot auto-configuration и создает bean `MiniAppPlatformClient`, если включена настройка `miniapp.platform.enabled`.
+
+Пример `application.yaml` в host backend:
+
+```yaml
+miniapp:
+  platform:
+    enabled: true
+    url: http://localhost:8080
+    realm-code: bank
+    client-id: default-bank
+    client-secret: raw-secret-shown-once
+    connect-timeout: PT5S
+    read-timeout: PT30S
+```
+
+## Использование SDK
+
+### Получить каталог опубликованных miniapp
+
+```java
+@Service
+public class HostMiniAppService {
+
+    private final MiniAppPlatformClient platformClient;
+
+    public HostMiniAppService(MiniAppPlatformClient platformClient) {
+        this.platformClient = platformClient;
+    }
+
+    public List<MiniAppInfo> catalog() {
+        return platformClient.getCatalog();
+    }
+}
+```
+
+### Запустить miniapp для пользователя
+
+```java
+    public String launchCreditCalculator() {
+        UserContext user = UserContext.builder()
+                .externalUserId("user-123")
+                .email("user@mail.com")
+                .roles(List.of("MB_PREMIUM", "CARD_OWNER"))
+                .attributes(Map.of(
+                        "segment", "premium",
+                        "city", "Kazan"
+                ))
+                .build();
+        MiniAppLaunchRequest request = MiniAppLaunchRequest.builder()
+                .user(user)
+                .device(DeviceContext.builder()
+                        .platform("web")
+                        .deviceId("browser-session-1")
+                        .build())
+                .context(Map.of(
+                        "theme", "dark",
+                        "locale", "ru"
+                ))
+                .build();
+        LaunchResult result = platformClient.launchMiniApp("credit-calculator", request);
+        return result.getLaunchUrl();
+    }
+```
+
+В URL находится только одноразовый ticket. Access token и refresh token туда не передаются.
+
+### Logout пользователя из host-приложения
+
+При logout host-приложение должно отозвать все miniapp-сессии пользователя в Realm:
+
+```java
+public void logout(String externalUserId) {
+    platformClient.logoutUser(externalUserId);
+}
+```
+
+### Introspection miniapp token
+
+Если host backend или miniapp backend хочет проверить miniapp access token через платформу:
+
+``` java
+var result = platformClient.introspectToken(token);
+
+if (!result.isActive()) {
+    throw new IllegalStateException("MiniApp token is inactive");
+}
+```
+
+## Observability
+
+Также возникает задача отслеживать и мониторить miniapp.
+Поэтому добавлен observability слой: технические логи, audit events и метрики.
+А также — AI Assistant для анализа логов, метрик и audit events.
+Его задача — помочь администраторам и разработчикам быстрее понимать, почему произошла ошибка.
+Мы рассматриваем его как RAG-систему, ассистент может объяснить проблему простым языком.
+
+В итоге:
+Для администратора — это единая панель управления miniapp, ролями, публикацией и статистикой.
+
+Для разработчика host-приложения — это одна интеграция через SDK вместо интеграции с каждым miniapp.
+
+Для пользователя — это бесшовный запуск miniapp без повторного логина.
+
+А для эксплуатации — это аудит, метрики, логи и AI Assistant для быстрого анализа ошибок.
