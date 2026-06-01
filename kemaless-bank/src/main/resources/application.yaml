@@ -1,0 +1,69 @@
+spring:
+  application:
+    name: kemaless-bank
+  config:
+    import:
+      - optional:file:.env[.properties]
+      - optional:file:../.env[.properties]
+  datasource:
+    url: ${BANK_SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5431/kemaless_bank_db}
+    driver-class-name: org.postgresql.Driver
+    username: ${BANK_SPRING_DATASOURCE_USERNAME:postgres}
+    password: ${BANK_SPRING_DATASOURCE_PASSWORD:root}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+
+server:
+  port: ${BANK_SERVER_PORT:8080}
+  error:
+    include-message: never
+    include-binding-errors: never
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  level:
+    com.kemaless.kemalessbank: INFO
+    org.springframework.security: WARN
+
+bank:
+  jwt:
+    issuer: ${BANK_JWT_ISSUER:kemaless-bank}
+    secret: ${BANK_JWT_SECRET:}
+    access-token-ttl: ${BANK_ACCESS_TOKEN_TTL:PT30M}
+    refresh-token-ttl: ${BANK_REFRESH_TOKEN_TTL:P14D}
+  public-ui-url: ${BANK_PUBLIC_UI_URL:http://localhost:5173}
+  cors:
+    allowed-origin-patterns:
+      - "http://localhost:*"
+      - "http://127.0.0.1:*"
+      - "http://[::1]:*"
+      - "http://192.168.*.*:*"
+      - "http://10.*.*.*:*"
+      - "http://172.*.*.*:*"
+  csp:
+    frame-src: ${BANK_CSP_FRAME_SRC:'self'}
+  miniapp-api:
+    allowed-codes: ${BANK_MINIAPP_API_ALLOWED_CODES:}
+
+miniapp:
+  platform:
+    enabled: ${MINIAPP_PLATFORM_ENABLED:false}
+    url: ${MINIAPP_PLATFORM_URL:}
+    realm-code: ${MINIAPP_REALM_CODE:}
+    client-id: ${MINIAPP_CLIENT_ID:}
+    client-secret: ${MINIAPP_CLIENT_SECRET:}
+    connect-timeout: ${MINIAPP_PLATFORM_CONNECT_TIMEOUT:PT5S}
+    read-timeout: ${MINIAPP_PLATFORM_READ_TIMEOUT:PT30S}

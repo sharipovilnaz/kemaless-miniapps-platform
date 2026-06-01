@@ -1,0 +1,63 @@
+groups:
+  - name:  delivery_business_alerts
+    interval: 30s
+    rules:
+      - alert: no_orders_created
+        expr: rate(orders_created_total[10m]) == 0
+        for: 10m
+        labels:
+          service: order
+          severity: critical
+        annotations:
+          summary: "No orders created for 10 minutes"
+          description: "Order creation rate is zero. Something is wrong."
+
+      - alert: high_order_creation_latency
+        expr: histogram_quantile(0.95, sum by (le) (rate(order_creation_duration_seconds_bucket[5m]))) > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: order
+        annotations:
+          summary: "High order creation latency"
+          description: "95th percentile order creation time is {{ $value }}s"
+
+      - alert: no_available_couriers
+        expr: couriers_online == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: delivery
+        annotations:
+          summary: "No online couriers"
+          description: "There are no online couriers for 5 minutes"
+
+      - alert: high_cancellation_rate
+        expr: |
+          (
+            sum(rate(orders_cancelled_total[30m]))
+            /
+            clamp_min(sum(rate(orders_created_total[30m])), 1e-9)
+          ) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          service: order
+        annotations:
+          summary: "High order cancellation rate"
+          description: "Cancellation rate is {{ $value | humanizePercentage }}"
+
+      - alert: high_payment_failure_rate
+        expr: |
+          (
+            sum(rate(payment_failed_total[10m]))
+            /
+            clamp_min(sum(rate(payment_attempts_total[10m])), 1e-9)
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          service: payment
+        annotations:
+          summary: "High payment failure rate"
+          description: "Payment failure rate is {{ $value | humanizePercentage }}"

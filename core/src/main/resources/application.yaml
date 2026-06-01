@@ -1,0 +1,91 @@
+spring:
+  application:
+    name: core
+  liquibase:
+    enabled: true
+    change-log: db/changelog/db.changelog-master.yaml
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:15432}/${POSTGRES_DATABASE:platform_db}
+    username: ${POSTGRES_USERNAME:postgres}
+    password: ${POSTGRES_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+  ai:
+    openai-sdk:
+      api-key: ${SPRING_AI_OPENAI_SDK_API_KEY:}
+      base-url: ${SPRING_AI_OPENAI_SDK_BASE_URL:}
+      chat:
+        enabled: ${PLATFORM_AI_COPILOT_ENABLED:false}
+        options:
+          model: ${SPRING_AI_OPENAI_SDK_CHAT_MODEL:gpt-4o-mini}
+    vectorstore:
+      pgvector:
+        index-type: hnsw
+        distance-type: cosine_distance
+        dimensions: 1536
+        initialize-schema: false
+
+server:
+  port: ${SERVER_PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  tracing:
+    sampling:
+      probability: 1.0
+    otlp:
+      tracing:
+        endpoint: http://alloy:4317
+  metrics:
+    tags:
+      application: miniapp-platform
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name:},%X{traceId:-},%X{spanId:-}]"
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:15432}/${POSTGRES_DATABASE:platform_db}
+    username: ${POSTGRES_USERNAME:postgres}
+    password: ${POSTGRES_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+
+platform:
+  ai:
+    copilot:
+      enabled: ${PLATFORM_AI_COPILOT_ENABLED:false}
+    rag:
+      enabled: ${PLATFORM_AI_RAG_ENABLED:false}
+      top-k: ${PLATFORM_AI_RAG_TOP_K:5}
+      similarity-threshold: ${PLATFORM_AI_RAG_SIMILARITY_THRESHOLD:0.65}
+      bootstrap-miniapps-on-startup: ${PLATFORM_AI_RAG_BOOTSTRAP_MINIAPPS_ON_STARTUP:true}
+    media:
+      enabled: ${PLATFORM_AI_MEDIA_ENABLED:false}
+      minio:
+        endpoint: ${PLATFORM_AI_MEDIA_MINIO_ENDPOINT:}
+        public-base-url: ${PLATFORM_AI_MEDIA_MINIO_PUBLIC_BASE_URL:}
+        access-key: ${PLATFORM_AI_MEDIA_MINIO_ACCESS_KEY:}
+        secret-key: ${PLATFORM_AI_MEDIA_MINIO_SECRET_KEY:}
+        bucket: ${PLATFORM_AI_MEDIA_MINIO_BUCKET:}
+        bootstrap-bucket-on-startup: ${PLATFORM_AI_MEDIA_BOOTSTRAP_BUCKET_ON_STARTUP:true}
+    validation:
+      check-on-startup: ${PLATFORM_AI_VALIDATION_CHECK_ON_STARTUP:true}
+      timeout-seconds: ${PLATFORM_AI_VALIDATION_TIMEOUT_SECONDS:5}
+    memory:
+      max-history-messages: ${PLATFORM_AI_MEMORY_MAX_HISTORY_MESSAGES:20}
+  auth:
+    bootstrap-enabled: ${PLATFORM_AUTH_BOOTSTRAP_ENABLED:true}
+    admin-username: ${PLATFORM_ADMIN_USERNAME:}
+    admin-password: ${PLATFORM_ADMIN_PASSWORD:}
+    backend-secret-key: ${PLATFORM_BACKEND_SECRET_KEY:}
+    access-token-ttl-seconds: ${PLATFORM_ACCESS_TOKEN_TTL_SECONDS:900}
+    refresh-token-ttl-seconds: ${PLATFORM_REFRESH_TOKEN_TTL_SECONDS:2592000}
+    launch-ticket-ttl-seconds: ${PLATFORM_LAUNCH_TICKET_TTL_SECONDS:60}
+    miniapp-refresh-token-ttl-seconds: ${PLATFORM_MINIAPP_REFRESH_TOKEN_TTL_SECONDS:2592000}
+  web:
+    cors:
+      # Через запятую; для Vite/React на другом хосте добавьте паттерн или задайте CORS_ALLOWED_ORIGIN_PATTERNS.
+      allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:*,http://127.0.0.1:*,https://localhost:*}

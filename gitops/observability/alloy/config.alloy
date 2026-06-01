@@ -1,0 +1,105 @@
+loki.write "local" {
+	endpoint {
+		url        = "http://loki:3100/loki/api/v1/push"
+		batch_size = "1MiB"
+		batch_wait = "1s"
+	}
+}
+
+discovery.docker "containers" {
+	host             = "unix:///var/run/docker.sock"
+	refresh_interval = "5s"
+}
+
+discovery.relabel "containers" {
+	targets = discovery.docker.containers.targets
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)"
+		target_label  = "container"
+	}
+
+	rule {
+		target_label = "job"
+		replacement  = "docker"
+	}
+
+	rule {
+		target_label = "host"
+		replacement  = constants.hostname
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)"
+		target_label  = "service"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_log_stream"]
+		target_label  = "stream"
+	}
+}
+
+loki.source.docker "containers" {
+	host          = "unix:///var/run/docker.sock"
+	targets       = discovery.docker.containers.targets
+	relabel_rules = discovery.relabel.containers.rules
+	forward_to    = [loki.write.local.receiver]
+}
+
+otelcol.processor.batch "traces" {
+	timeout         = "1s"
+	send_batch_size = 1024
+
+	output {
+		traces = [otelcol.exporter.otlp.tempo.input]
+	}
+}
+
+otelcol.receiver.otlp "default" {
+	grpc {
+		endpoint = "0.0.0.0:4317"
+	}
+
+	http {
+		endpoint = "0.0.0.0:4318"
+	}
+
+	output {
+		traces  = [otelcol.processor.batch.traces.input]
+		metrics = [otelcol.exporter.prometheus.default.input]
+	}
+}
+
+otelcol.exporter.otlp "tempo" {
+	client {
+		endpoint = "tempo:4317"
+
+		tls {
+			insecure = true
+		}
+		compression = "gzip"
+	}
+}
+
+otelcol.exporter.prometheus "default" {
+	forward_to = [prometheus.remote_write.default.receiver]
+}
+
+prometheus.remote_write "default" {
+	endpoint {
+		url = "http://prometheus:9090/api/v1/write"
+
+		queue_config {
+			capacity             = 10000
+			max_shards           = 10
+			min_shards           = 1
+			max_samples_per_send = 2000
+			batch_send_deadline  = "5s"
+			min_backoff          = "30ms"
+			max_backoff          = "5s"
+		}
+	}
+}

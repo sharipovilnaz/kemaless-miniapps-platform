@@ -1,0 +1,31 @@
+server:
+  port: ${PAYMENT_MINIAPP_SERVER_PORT:8091}
+
+spring:
+  application:
+    name: payment-miniapp
+  config:
+    import:
+      - optional:file:.env[.properties]
+      - optional:file:../.env[.properties]
+
+miniapp:
+  realm-code: ${MINIAPP_REALM_CODE:}
+  default-mini-app-code: ${MINIAPP_CODE:}
+  host-api:
+    base-url: ${MINIAPP_HOST_API_BASE_URL:}
+    connect-timeout: ${MINIAPP_HOST_API_CONNECT_TIMEOUT:PT5S}
+    read-timeout: ${MINIAPP_HOST_API_READ_TIMEOUT:PT30S}
+  platform:
+    base-url: ${PLATFORM_BASE_URL:}
+  sso:
+    connect-timeout: ${MINIAPP_SSO_CONNECT_TIMEOUT:PT5S}
+    read-timeout: ${MINIAPP_SSO_READ_TIMEOUT:PT30S}
+  web-security:
+    allowed-origins:
+      - ${BANK_PUBLIC_UI_URL:}
+      - ${BANK_BACKEND_URL:}
+    frame-ancestors:
+      - "'self'"
+      - ${BANK_PUBLIC_UI_URL:}
+      - ${BANK_BACKEND_URL:}

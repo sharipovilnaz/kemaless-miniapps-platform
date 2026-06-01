@@ -1,0 +1,6 @@
+miniapp:
+  platform:
+    url: http://127.0.0.1:65501
+    realm-code: test-realm
+    client-id: test-client
+    client-secret: unit-test-placeholder

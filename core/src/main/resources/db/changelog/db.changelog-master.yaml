@@ -1,0 +1,14 @@
+# Главный changelog Liquibase (модуль core).
+# Порядок include важен: сначала базовые таблицы, затем расширения и фичи.
+databaseChangeLog:
+  - include:
+      file: db/changes/1-admin-auth-schema.sql
+  - include:
+      file: db/changes/2-core-schema.sql
+  - include:
+      file: db/changes/2-miniapp-auth-schema.sql
+  - include:
+      file: changes/003-pgvector.yml
+      relativeToChangelogFile: true
+  - include:
+      file: db/changes/004-ai-chat-tables.sql

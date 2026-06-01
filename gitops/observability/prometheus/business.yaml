@@ -1,0 +1,33 @@
+groups:
+  - name: miniapp_business_alerts
+    interval: 30s
+    rules:
+      - alert: HighLaunchDenyRate
+        expr: |
+          (
+            sum(rate(miniapp_launch_denied_total[5m]))
+            /
+            clamp_min(sum(rate(miniapp_launch_total[5m])), 1e-9)
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: admin-platform
+        annotations:
+          summary: "Высокий процент отказов при запуске (Launch Denied)"
+          description: "Более 10% попыток запуска миниаппов отклоняются политиками доступа (Access Policy)."
+
+      - alert: HighSsoExchangeFailureRate
+        expr: |
+          (
+            sum(rate(sso_exchange_failed_total[5m]))
+            /
+            clamp_min(sum(rate(sso_exchange_total[5m])), 1e-9)
+          ) > 0.05
+        for: 3m
+        labels:
+          severity: critical
+          service: sso
+        annotations:
+          summary: "Массовые ошибки обмена SSO Ticket на токен"
+          description: "Более 5% SSO-тикетов не могут быть обменяны на сессию. Возможна проблема с БД или рассинхронизация времени."

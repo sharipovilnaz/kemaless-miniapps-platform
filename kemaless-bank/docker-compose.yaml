@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: kemaless_bank_db_pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kemaless_bank_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: root
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=5"]
+    ports:
+      - '5431:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kemaless-network
+
+volumes:
+  postgres_data:
+
+networks:
+  kemaless-network:
+    driver: bridge

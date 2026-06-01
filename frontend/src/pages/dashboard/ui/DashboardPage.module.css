@@ -1,0 +1,102 @@
+.wrapper {
+	display: flex;
+	flex-direction: column;
+	gap: 20px;
+}
+
+.header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 18px;
+}
+
+.title {
+	margin: 0 0 8px !important;
+}
+
+.subtitle {
+	display: block;
+	color: #64748b;
+	font-weight: 500;
+}
+
+.headerMeta {
+	display: flex;
+	align-items: stretch;
+	gap: 12px;
+}
+
+.updatedAt {
+	display: flex;
+	align-items: flex-start;
+	flex-direction: column;
+	gap: 6px;
+	min-width: 190px;
+	padding: 14px 16px;
+	border: 1px solid #e8eef8;
+	border-radius: 16px;
+	background: #ffffff;
+	box-shadow: 0 12px 32px rgb(42 65 130 / 8%);
+}
+
+.scope {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 14px;
+	min-width: 250px;
+	padding: 14px 16px;
+	border: 1px solid #d9e8ff;
+	border-radius: 16px;
+	background: #f8fbff;
+	box-shadow: 0 12px 32px rgb(42 65 130 / 8%);
+}
+
+.scope > div {
+	display: flex;
+	min-width: 0;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.scope :global(.ant-typography) {
+	overflow-wrap: anywhere;
+}
+
+.chartsGrid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 18px;
+}
+
+.stateCard,
+.skeletonCard {
+	border: 1px solid #e8eef8;
+	background: #ffffff;
+	box-shadow: 0 12px 32px rgb(42 65 130 / 8%);
+}
+
+.skeletonCard :global(.ant-card-body) {
+	min-height: 382px;
+}
+
+@media (width <= 900px) {
+	.header {
+		flex-direction: column;
+	}
+
+	.headerMeta {
+		width: 100%;
+		flex-direction: column;
+	}
+
+	.scope,
+	.updatedAt {
+		width: 100%;
+	}
+
+	.chartsGrid {
+		grid-template-columns: 1fr;
+	}
+}

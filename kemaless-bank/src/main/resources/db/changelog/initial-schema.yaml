@@ -1,0 +1,397 @@
+databaseChangeLog:
+  - changeSet:
+      id: initial-schema-bank-user
+      author: kemaless-bank
+      preConditions:
+        onFail: MARK_RAN
+        not:
+          tableExists:
+            tableName: bank_user
+      changes:
+        - createTable:
+            tableName: bank_user
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: username
+                  type: VARCHAR(120)
+                  constraints:
+                    nullable: false
+                    unique: true
+              - column:
+                  name: password_hash
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: full_name
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: email
+                  type: VARCHAR(255)
+              - column:
+                  name: phone
+                  type: VARCHAR(32)
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  defaultValueComputed: CURRENT_TIMESTAMP
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  defaultValueComputed: CURRENT_TIMESTAMP
+                  constraints:
+                    nullable: false
+        - addUniqueConstraint:
+            tableName: bank_user
+            columnNames: email
+            constraintName: uk_bank_user_email
+
+  - changeSet:
+      id: initial-schema-bank-role
+      author: kemaless-bank
+      preConditions:
+        onFail: MARK_RAN
+        not:
+          tableExists:
+            tableName: bank_role
+      changes:
+        - createTable:
+            tableName: bank_role
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: code
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+                    unique: true
+              - column:
+                  name: label
+                  type: VARCHAR(128)
+                  constraints:
+                    nullable: false
+
+  - changeSet:
+      id: initial-schema-bank-user-role
+      author: kemaless-bank
+      preConditions:
+        onFail: MARK_RAN
+        not:
+          tableExists:
+            tableName: bank_user_role
+      changes:
+        - createTable:
+            tableName: bank_user_role
+            columns:
+              - column:
+                  name: user_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: role_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+        - addPrimaryKey:
+            tableName: bank_user_role
+            columnNames: user_id, role_id
+            constraintName: pk_bank_user_role
+        - addForeignKeyConstraint:
+            baseTableName: bank_user_role
+            baseColumnNames: user_id
+            referencedTableName: bank_user
+            referencedColumnNames: id
+            constraintName: fk_bank_user_role_user
+        - addForeignKeyConstraint:
+            baseTableName: bank_user_role
+            baseColumnNames: role_id
+            referencedTableName: bank_role
+            referencedColumnNames: id
+            constraintName: fk_bank_user_role_role
+
+  - changeSet:
+      id: initial-schema-bank-account
+      author: kemaless-bank
+      preConditions:
+        onFail: MARK_RAN
+        not:
+          tableExists:
+            tableName: bank_account
+      changes:
+        - createTable:
+            tableName: bank_account
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: user_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: account_number
+                  type: VARCHAR(34)
+                  constraints:
+                    nullable: false
+                    unique: true
+              - column:
+                  name: title
+                  type: VARCHAR(120)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: currency
+                  type: VARCHAR(3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: balance
+                  type: NUMERIC(19,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: bank_account
+            baseColumnNames: user_id
+            referencedTableName: bank_user
+            referencedColumnNames: id
+            constraintName: fk_bank_account_user
+
+  - changeSet:
+      id: initial-schema-bank-operation
+      author: kemaless-bank
+      preConditions:
+        onFail: MARK_RAN
+        not:
+          tableExists:
+            tableName: bank_operation
+      changes:
+        - createTable:
+            tableName: bank_operation
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: user_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: account_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: related_account_id
+                  type: BIGINT
+              - column:
+                  name: operation_type
+                  type: VARCHAR(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: amount
+                  type: NUMERIC(19,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: currency
+                  type: VARCHAR(3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: description
+                  type: VARCHAR(500)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: bank_operation
+            baseColumnNames: user_id
+            referencedTableName: bank_user
+            referencedColumnNames: id
+            constraintName: fk_bank_operation_user
+        - addForeignKeyConstraint:
+            baseTableName: bank_operation
+            baseColumnNames: account_id
+            referencedTableName: bank_account
+            referencedColumnNames: id
+            constraintName: fk_bank_operation_account
+        - addForeignKeyConstraint:
+            baseTableName: bank_operation
+            baseColumnNames: related_account_id
+            referencedTableName: bank_account
+            referencedColumnNames: id
+            constraintName: fk_bank_operation_related_account
+        - createIndex:
+            tableName: bank_operation
+            indexName: idx_bank_operation_account_created
+            columns:
+              - column:
+                  name: account_id
+              - column:
+                  name: created_at
+
+  - changeSet:
+      id: initial-schema-miniapp-access
+      author: kemaless-bank
+      preConditions:
+        onFail: MARK_RAN
+        not:
+          tableExists:
+            tableName: miniapp_access
+      changes:
+        - createTable:
+            tableName: miniapp_access
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: user_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: miniapp_id
+                  type: VARCHAR(120)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: miniapp_name
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: scopes_csv
+                  type: VARCHAR(500)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: granted_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: revoked_at
+                  type: TIMESTAMP WITH TIME ZONE
+        - addUniqueConstraint:
+            tableName: miniapp_access
+            columnNames: user_id, miniapp_id
+            constraintName: uk_miniapp_access_user_app
+        - addForeignKeyConstraint:
+            baseTableName: miniapp_access
+            baseColumnNames: user_id
+            referencedTableName: bank_user
+            referencedColumnNames: id
+            constraintName: fk_miniapp_access_user
+
+  - changeSet:
+      id: initial-schema-bank-user-device
+      author: kemaless-bank
+      preConditions:
+        onFail: MARK_RAN
+        not:
+          tableExists:
+            tableName: bank_user_device
+      changes:
+        - createTable:
+            tableName: bank_user_device
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: user_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: fingerprint
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: user_agent
+                  type: TEXT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: ip_address
+                  type: VARCHAR(64)
+              - column:
+                  name: first_seen_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: last_seen_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+        - addUniqueConstraint:
+            tableName: bank_user_device
+            columnNames: user_id, fingerprint
+            constraintName: uk_bank_user_device_user_fingerprint
+        - addForeignKeyConstraint:
+            baseTableName: bank_user_device
+            baseColumnNames: user_id
+            referencedTableName: bank_user
+            referencedColumnNames: id
+            constraintName: fk_bank_user_device_user
+        - createIndex:
+            tableName: bank_user_device
+            indexName: idx_bank_user_device_user_last_seen
+            columns:
+              - column:
+                  name: user_id
+              - column:
+                  name: last_seen_at

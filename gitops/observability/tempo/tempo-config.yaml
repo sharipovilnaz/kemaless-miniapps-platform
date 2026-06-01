@@ -1,0 +1,44 @@
+server:
+  http_listen_port: 3200
+  log_level: info
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  max_block_duration: 5m
+  trace_idle_period: 10s
+  flush_check_period: 30s
+
+compactor:
+  compaction:
+    block_retention: 48h
+    compacted_block_retention: 1h
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /tmp/tempo/traces
+    wal:
+      path: /tmp/tempo/wal
+    block:
+      version: v2
+
+overrides:
+  defaults:
+    ingestion:
+      rate_limit_bytes: 15000000
+      burst_size_bytes: 20000000
+      max_traces_per_user: 10000
+    global:
+      max_bytes_per_trace: 5000000
+
+querier:
+  max_concurrent_queries: 20

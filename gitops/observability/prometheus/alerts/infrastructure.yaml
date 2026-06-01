@@ -1,0 +1,68 @@
+groups:
+  - name: targets
+    rules:
+      - alert: TargetDown
+        expr: up == 0
+        for: 2m
+        labels:
+          service: target
+          severity: critical
+        annotations:
+          summary: "Target is down: {{ $labels.job }} / {{ $labels.instance }}"
+          description: "Prometheus has been unable to scrape metrics from this target for more than 2 minutes."
+
+  - name: probes
+    rules:
+      - alert: ProbeFailed
+        expr: probe_success == 0
+        for: 2m
+        labels:
+          service: probe
+          severity: warning
+        annotations:
+          summary: "Blackbox probe failed: {{ $labels.instance }}"
+          description: "The availability check has completed with an error."
+
+  - name: hardware
+    rules:
+      - alert: HighCpuLoad
+        expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          service: hardware
+          severity: warning
+        annotations:
+          summary: "High CPU load on {{ $labels.instance }} ({{ $value | printf \"%.1f\" }}%)"
+          description: "Average CPU load has been above 80% for the last 5 minutes."
+
+      - alert: HighMemoryUsage
+        expr: 100 - ((node_memory_MemAvailable_bytes * 100) / node_memory_MemTotal_bytes) > 88
+        for: 5m
+        labels:
+          service: hardware
+          severity: warning
+        annotations:
+          summary: "High RAM usage on {{ $labels.instance }}"
+          description: "Available memory is below ~12%."
+
+      - alert: LowDiskSpace
+        expr: (node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs"} / node_filesystem_size_bytes) < 0.15
+        for: 10m
+        labels:
+          service: hardware
+          severity: error
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }} ({{ $labels.mountpoint }})"
+          description: "Less than 15% free space remaining on the partition."
+
+  - name: containers
+    rules:
+      - alert: ContainerNotSeen
+        expr: (time() - container_last_seen{name=~".+"}) > 120
+        for: 2m
+        labels:
+          service: container
+          severity: warning
+        annotations:
+          summary: "Container not sending cAdvisor metrics: {{ $labels.name }}"
+          description: "The container_last_seen metric has not been updated for a long time."

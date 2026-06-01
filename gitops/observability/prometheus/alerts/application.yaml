@@ -1,0 +1,46 @@
+groups:
+  - name: spring_application
+    interval: 30s
+    rules:
+      - alert: SpringHighHttpErrorRate
+        expr: |
+          (
+            sum by (job, instance) (rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+            /
+            clamp_min(sum by (job, instance) (rate(http_server_requests_seconds_count[5m])), 1e-9)
+          ) > 0.05
+        for: 3m
+        labels:
+          severity: critical
+          team: app
+        annotations:
+          summary: "High HTTP 5xx error rate ({{ $labels.job }})"
+          description: "The proportion of 5xx responses has exceeded 5% for the last 3 minutes."
+
+      - alert: SpringSlowHttpRequests
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le, job) (rate(http_server_requests_seconds_bucket[5m]))
+          ) > 3
+        for: 5m
+        labels:
+          severity: warning
+          team: app
+        annotations:
+          summary: "Slow HTTP requests (p99 > 3s) — {{ $labels.job }}"
+          description: "The 99th percentile of response time exceeds 3 seconds."
+
+      - alert: JvmHeapPressure
+        expr: |
+          sum by (instance, job) (
+            (jvm_memory_used_bytes{area="heap"} / jvm_memory_max_bytes{area="heap"})
+            and (jvm_memory_max_bytes{area="heap"} > 0)
+          ) > 0.92
+        for: 5m
+        labels:
+          severity: warning
+          team: app
+        annotations:
+          summary: "High JVM heap usage ({{ $labels.job }})"
+          description: "JVM heap usage exceeds 92%."

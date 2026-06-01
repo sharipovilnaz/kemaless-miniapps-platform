@@ -1,0 +1,15 @@
+databaseChangeLog:
+  - changeSet:
+      id: 003-pgvector-init
+      author: technokratos
+      preConditions:
+        - onFail: MARK_RAN
+        - dbms:
+            type: postgresql
+        - sqlCheck:
+            expectedResult: 1
+            sql: SELECT COUNT(*) FROM pg_available_extensions WHERE name = 'vector'
+      changes:
+        - sqlFile:
+            path: 003-pgvector-body.sql
+            relativeToChangelogFile: true
