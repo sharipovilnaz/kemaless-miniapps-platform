@@ -4,6 +4,7 @@ import com.kemaless.core.ai.config.PlatformAiProperties;
 import com.kemaless.core.ai.dto.api.AdminCopilotAttachmentRequest;
 import com.kemaless.core.ai.dto.api.AdminCopilotMediaUploadResponse;
 import com.kemaless.core.ai.exception.MediaStorageUnavailableException;
+import com.kemaless.core.auth.dto.AdminJwtPrincipal;
 import io.minio.GetObjectArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
@@ -12,6 +13,7 @@ import org.springframework.ai.content.Media;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.Resource;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.util.MimeType;
 import org.springframework.util.MimeTypeUtils;
@@ -28,6 +30,9 @@ import java.util.UUID;
 @Service
 public class AdminCopilotMediaService {
 
+    private static final String PREFIX = "admin-copilot/";
+    private static final String GLOBAL_SCOPE = "global";
+
     private final ObjectProvider<MinioClient> minioClient;
     private final PlatformAiProperties platformAiProperties;
 
@@ -39,7 +44,8 @@ public class AdminCopilotMediaService {
         this.platformAiProperties = platformAiProperties;
     }
 
-    public AdminCopilotMediaUploadResponse upload(UUID userId, MultipartFile file) {
+    public AdminCopilotMediaUploadResponse upload(AdminJwtPrincipal principal, MultipartFile file) {
+        AdminJwtPrincipal authenticated = requirePrincipal(principal);
         MinioClient client = minioClient.getIfAvailable();
         if (client == null) {
             throw new MediaStorageUnavailableException("MinIO недоступен (клиент не создан).");
@@ -54,7 +60,8 @@ public class AdminCopilotMediaService {
 
         String originalFileName = file.getOriginalFilename() == null ? "upload.bin" : file.getOriginalFilename();
         String safeFileName = sanitizeFileName(originalFileName);
-        String objectKey = "admin-copilot/" + userId + "/" + UUID.randomUUID() + "/" + safeFileName;
+        String scope = scopeSegment(authenticated.realmCode());
+        String objectKey = PREFIX + scope + "/" + authenticated.userId() + "/" + UUID.randomUUID() + "/" + safeFileName;
         String mimeType = normalizeMimeType(file.getContentType());
 
         try {
@@ -79,37 +86,72 @@ public class AdminCopilotMediaService {
         );
     }
 
-    public List<Media> toMedia(List<AdminCopilotAttachmentRequest> attachments) {
+    public List<Media> toMedia(AdminJwtPrincipal principal, List<AdminCopilotAttachmentRequest> attachments) {
         if (attachments == null || attachments.isEmpty()) {
             return List.of();
         }
+        AdminJwtPrincipal authenticated = requirePrincipal(principal);
 
         return attachments.stream()
-                .map(this::toMedia)
+                .map(attachment -> toMedia(authenticated, attachment))
                 .toList();
     }
 
-    private Media toMedia(AdminCopilotAttachmentRequest attachment) {
+    private Media toMedia(AdminJwtPrincipal principal, AdminCopilotAttachmentRequest attachment) {
         if (attachment == null) {
             throw new IllegalArgumentException("Вложение не задано");
         }
         String mimeTypeValue = normalizeMimeType(attachment.mimeType());
         MimeType mimeType = MimeTypeUtils.parseMimeType(mimeTypeValue);
 
-        if (attachment.objectKey() != null && !attachment.objectKey().isBlank()) {
-            String objectKey = validateObjectKey(attachment.objectKey());
-            Resource resource = loadFromMinio(objectKey, attachment.fileName());
-            return new Media(mimeType, resource);
+        String keyFromParam = hasText(attachment.objectKey()) ? validateObjectKey(attachment.objectKey()) : null;
+        String keyFromUrl = hasText(attachment.url()) ? extractTrustedStorageObjectKey(attachment.url()) : null;
+        if (keyFromParam == null && keyFromUrl == null) {
+            throw new IllegalArgumentException("Для вложения требуется objectKey или url");
+        }
+        if (keyFromParam != null && keyFromUrl != null && !keyFromParam.equals(keyFromUrl)) {
+            throw new IllegalArgumentException("Параметры objectKey и url вложения не совпадают");
         }
 
-        if (attachment.url() != null && !attachment.url().isBlank()) {
-            // Запрещаем внешние HTTP-запросы (редиректы, DNS rebinding, IPv6/спецдиапазоны) и грузим только из доверенного MinIO.
-            String objectKey = extractTrustedStorageObjectKey(attachment.url());
-            Resource resource = loadFromMinio(objectKey, attachment.fileName());
-            return new Media(mimeType, resource);
-        }
+        String resolvedObjectKey = keyFromParam != null ? keyFromParam : keyFromUrl;
+        assertOwnership(resolvedObjectKey, principal);
+        Resource resource = loadFromMinio(resolvedObjectKey, attachment.fileName());
+        return new Media(mimeType, resource);
+    }
 
-        throw new IllegalArgumentException("Для вложения требуется objectKey или url");
+    private void assertOwnership(String objectKey, AdminJwtPrincipal principal) {
+        // Формат ключа строго привязан к realm-scope и userId владельца, чтобы исключить доступ к чужим S3-объектам.
+        String[] segments = objectKey.split("/", -1);
+        if (segments.length != 5) {
+            throw new AccessDeniedException("Нет доступа к вложению с некорректным владельцем");
+        }
+        String expectedScope = scopeSegment(principal.realmCode());
+        String expectedUserId = principal.userId().toString();
+        if (!expectedScope.equals(segments[1]) || !expectedUserId.equals(segments[2])) {
+            throw new AccessDeniedException("Нет доступа к вложению другого пользователя или реалма");
+        }
+    }
+
+    private AdminJwtPrincipal requirePrincipal(AdminJwtPrincipal principal) {
+        if (principal == null || principal.userId() == null) {
+            throw new AccessDeniedException("Требуется аутентифицированный администратор для работы с вложениями");
+        }
+        return principal;
+    }
+
+    private String scopeSegment(String realmCode) {
+        if (realmCode == null || realmCode.isBlank()) {
+            return GLOBAL_SCOPE;
+        }
+        String sanitized = realmCode.trim().toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]", "_");
+        if (sanitized.isBlank()) {
+            throw new AccessDeniedException("Некорректный realm-контекст администратора");
+        }
+        return "realm-" + sanitized;
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private String validateObjectKey(String rawObjectKey) {
@@ -274,7 +316,7 @@ public class AdminCopilotMediaService {
         String normalized = Normalizer.normalize(fileName, Normalizer.Form.NFKC);
         String ascii = normalized.replaceAll("[^\\p{ASCII}]", "_");
         String safe = ascii.replaceAll("[^A-Za-z0-9._-]", "_");
-        if (safe.isBlank()) {
+        if (safe.isBlank() || ".".equals(safe) || "..".equals(safe) || safe.contains("..")) {
             return "upload.bin";
         }
         return safe;

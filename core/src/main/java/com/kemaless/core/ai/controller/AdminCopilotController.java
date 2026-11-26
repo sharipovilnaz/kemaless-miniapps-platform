@@ -2,6 +2,7 @@ package com.kemaless.core.ai.controller;
 
 import java.util.List;
 
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -44,10 +45,15 @@ public class AdminCopilotController {
     }
 
     @PostMapping("/chat")
-    public AdminCopilotChatResponse chat(@Valid @RequestBody AdminCopilotChatRequest request) {
+    public AdminCopilotChatResponse chat(
+            @AuthenticationPrincipal AdminJwtPrincipal principal,
+            @Valid @RequestBody AdminCopilotChatRequest request
+    ) {
+        AdminJwtPrincipal authenticated = requirePrincipal(principal);
         requireCopilot();
         requireMediaForAttachments(request.attachments());
-        String response = adminCopilotService.askCopilot(request.sessionId(), request.text(), request.attachments());
+        String response = adminCopilotService.askCopilot(
+                authenticated, request.sessionId(), request.text(), request.attachments());
         return new AdminCopilotChatResponse(request.sessionId(), response);
     }
 
@@ -56,8 +62,16 @@ public class AdminCopilotController {
             @AuthenticationPrincipal AdminJwtPrincipal principal,
             @RequestParam("file") MultipartFile file
     ) {
+        AdminJwtPrincipal authenticated = requirePrincipal(principal);
         requireMediaUpload();
-        return adminCopilotMediaService.upload(principal.userId(), file);
+        return adminCopilotMediaService.upload(authenticated, file);
+    }
+
+    private AdminJwtPrincipal requirePrincipal(AdminJwtPrincipal principal) {
+        if (principal == null || principal.userId() == null) {
+            throw new AccessDeniedException("Требуется аутентификация администратора");
+        }
+        return principal;
     }
 
     private void requireCopilot() {
