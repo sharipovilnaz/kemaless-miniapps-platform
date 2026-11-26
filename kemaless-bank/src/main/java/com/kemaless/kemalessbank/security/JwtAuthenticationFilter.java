@@ -1,19 +1,22 @@
 package com.kemaless.kemalessbank.security;
 
 import com.kemaless.kemalessbank.config.BankSecurityProperties;
+import com.kemaless.miniappsdk.api.MiniAppPlatformClient;
+import com.kemaless.miniappsdk.api.dto.TokenIntrospectionResult;
 import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.ExpiredJwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import lombok.extern.slf4j.Slf4j;
-import com.kemaless.miniappsdk.api.MiniAppPlatformClient;
-import com.kemaless.miniappsdk.api.dto.TokenIntrospectionResult;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
@@ -22,6 +25,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Component
 @Slf4j
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
+
+    private static final String MINIAPP_TOKEN_TYPE = "MINIAPP_USER_TOKEN";
 
     private final JwtService jwtService;
     private final MiniAppPlatformClient miniAppPlatformClient;
@@ -45,8 +50,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return;
         }
 
+        String rawToken = authorization.substring(7);
         try {
-            Claims claims = jwtService.validate(authorization.substring(7));
+            Claims claims = jwtService.validate(rawToken);
             if (!"access".equals(claims.get("typ", String.class))) {
                 writeUnauthorized(response, "Для этого действия нужно войти в банк заново");
                 return;
@@ -54,11 +60,15 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
                     claims.getSubject(),
                     null,
-                    authorities(claims));
+                    bankUserAuthorities(claims));
             SecurityContextHolder.getContext().setAuthentication(authentication);
             filterChain.doFilter(request, response);
+        } catch (ExpiredJwtException ex) {
+            SecurityContextHolder.clearContext();
+            log.warn("Bank JWT expired: {}", ex.getMessage());
+            writeUnauthorized(response, "Сессия истекла. Войдите в банк заново");
         } catch (RuntimeException ex) {
-            if (authenticateMiniAppToken(authorization.substring(7))) {
+            if (authenticateMiniAppToken(rawToken)) {
                 filterChain.doFilter(request, response);
                 return;
             }
@@ -76,15 +86,17 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 """.formatted(message));
     }
 
-    private Collection<SimpleGrantedAuthority> authorities(Claims claims) {
+    private Collection<GrantedAuthority> bankUserAuthorities(Claims claims) {
+        List<GrantedAuthority> result = new ArrayList<>();
+        result.add(new SimpleGrantedAuthority("ROLE_BANK_USER"));
         List<?> roles = claims.get("roles", List.class);
-        if (roles == null) {
-            return List.of();
+        if (roles != null) {
+            roles.stream()
+                    .map(Object::toString)
+                    .map(role -> new SimpleGrantedAuthority("ROLE_" + role))
+                    .forEach(result::add);
         }
-        return roles.stream()
-                .map(Object::toString)
-                .map(role -> new SimpleGrantedAuthority("ROLE_" + role))
-                .toList();
+        return result;
     }
 
     private boolean authenticateMiniAppToken(String token) {
@@ -93,7 +105,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         }
         try {
             TokenIntrospectionResult introspection = miniAppPlatformClient.introspectToken(token);
-            if (introspection == null || !introspection.isActive() || introspection.getExternalUserId() == null) {
+            if (introspection == null
+                    || !introspection.isActive()
+                    || introspection.getExternalUserId() == null
+                    || introspection.getExternalUserId().isBlank()) {
+                return false;
+            }
+            if (introspection.getType() != null && !MINIAPP_TOKEN_TYPE.equals(introspection.getType())) {
+                log.warn("Miniapp token rejected: unexpected type={}", introspection.getType());
                 return false;
             }
             if (!properties.miniappApi().allows(introspection.getMiniAppCode())) {
@@ -112,10 +131,21 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         }
     }
 
-    private Collection<SimpleGrantedAuthority> miniAppAuthorities(TokenIntrospectionResult introspection) {
-        List<String> roles = introspection.getRealmRoles() == null ? List.of() : introspection.getRealmRoles();
-        return roles.stream()
-                .map(role -> new SimpleGrantedAuthority("ROLE_" + role))
-                .toList();
+    private Collection<GrantedAuthority> miniAppAuthorities(TokenIntrospectionResult introspection) {
+        // Miniapp-сессия получает отдельную роль без прямых прав банковского пользователя (закрытие/блокировка счетов и т.д.).
+        List<GrantedAuthority> authorities = new ArrayList<>();
+        authorities.add(new SimpleGrantedAuthority("ROLE_MINIAPP_CLIENT"));
+        authorities.add(new SimpleGrantedAuthority("SCOPE_host.profile.read"));
+        authorities.add(new SimpleGrantedAuthority("SCOPE_host.accounts.read"));
+        authorities.add(new SimpleGrantedAuthority("SCOPE_host.operations.read"));
+        authorities.add(new SimpleGrantedAuthority("SCOPE_host.transfers.peer.write"));
+        List<String> realmRoles = introspection.getRealmRoles();
+        if (realmRoles != null) {
+            realmRoles.stream()
+                    .filter(role -> role != null && !role.isBlank())
+                    .map(role -> new SimpleGrantedAuthority("REALM_ROLE_" + role.trim()))
+                    .forEach(authorities::add);
+        }
+        return authorities;
     }
 }

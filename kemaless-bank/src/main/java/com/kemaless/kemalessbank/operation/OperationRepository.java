@@ -5,12 +5,15 @@ import com.kemaless.kemalessbank.user.BankUser;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface OperationRepository extends JpaRepository<BankOperation, UUID> {
 
+    @EntityGraph(attributePaths = {"account", "relatedAccount"})
     List<BankOperation> findAllByUserOrderByCreatedAtDesc(BankUser user);
 
+    @EntityGraph(attributePaths = {"account", "relatedAccount"})
     List<BankOperation> findAllByAccountAndCreatedAtBetweenOrderByCreatedAtDesc(
             BankAccount account,
             OffsetDateTime from,

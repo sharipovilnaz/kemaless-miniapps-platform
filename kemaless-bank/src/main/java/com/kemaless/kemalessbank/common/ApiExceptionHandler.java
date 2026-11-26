@@ -1,7 +1,6 @@
 package com.kemaless.kemalessbank.common;
 
 import java.net.URI;
-import java.sql.SQLException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import lombok.extern.slf4j.Slf4j;
@@ -78,18 +77,6 @@ public class ApiExceptionHandler {
     @ExceptionHandler(DataAccessException.class)
     ProblemDetail dataAccess(DataAccessException ex) {
         log.error("Ошибка доступа к базе данных", ex);
-        Throwable cause = ex.getMostSpecificCause();
-        if (cause instanceof SQLException sql && sql.getMessage() != null) {
-            String m = sql.getMessage();
-            if (m.contains("bank_user_device")
-                    && (m.contains("does not exist")
-                            || m.contains("не существует")
-                            || "42P01".equals(sql.getSQLState()))) {
-                return problem(
-                        HttpStatus.INTERNAL_SERVER_ERROR,
-                        "Таблица устройств не создана. Перезапустите бэкенд (Liquibase создаст bank_user_device) или выполните миграции вручную.");
-            }
-        }
         return problem(HttpStatus.INTERNAL_SERVER_ERROR, "Ошибка базы данных. Попробуйте позже.");
     }
 
@@ -116,6 +103,12 @@ public class ApiExceptionHandler {
         }
         if ("DecimalMin".equals(code)) {
             return fieldName + ": значение должно быть больше нуля";
+        }
+        if ("DecimalMax".equals(code)) {
+            return fieldName + ": сумма превышает допустимый предел";
+        }
+        if ("Digits".equals(code)) {
+            return fieldName + ": укажите сумму с точностью до копеек (не более 2 знаков после запятой)";
         }
         return fieldName + ": проверьте значение";
     }

@@ -8,10 +8,19 @@ import com.kemaless.kemalessbank.config.BankSecurityProperties;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import okhttp3.mockwebserver.Dispatcher;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
+import okhttp3.mockwebserver.RecordedRequest;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -50,7 +59,8 @@ class KemalessBankApplicationTests {
         registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
-        registry.add("bank.jwt.secret", () -> "2FTQErHPMDI66u335zxKWaVAohNwNZehJ6xM5qP9WKO");
+        registry.add("bank.jwt.secret", () -> "test-only-jwt-secret-key-at-least-32-bytes");
+        registry.add("bank.miniapp-api.allowed-codes", () -> "payment-service");
         registry.add("miniapp.platform.enabled", () -> "true");
         registry.add("miniapp.platform.url", () -> "http://127.0.0.1:" + PLATFORM.getPort());
         registry.add("miniapp.platform.realm-code", () -> "bank-mobile");
@@ -75,26 +85,40 @@ class KemalessBankApplicationTests {
     }
 
     @Test
-    void emptyMiniappApiAllowListTrustsActivePlatformToken() {
-        BankSecurityProperties.MiniappApi miniappApi = new BankSecurityProperties.MiniappApi(List.of());
+    void emptyMiniappApiAllowListRejectsMiniappTokens() {
+        BankSecurityProperties.MiniappApi emptyAllowList = new BankSecurityProperties.MiniappApi(List.of());
+        assertThat(emptyAllowList.allows("payment-service")).isFalse();
+        assertThat(emptyAllowList.allows(null)).isFalse();
 
-        assertThat(miniappApi.allows("segsrrgsfd")).isTrue();
-        assertThat(miniappApi.allows(null)).isFalse();
+        BankSecurityProperties.MiniappApi configured = new BankSecurityProperties.MiniappApi(List.of("payment-service"));
+        assertThat(configured.allows("payment-service")).isTrue();
+        assertThat(configured.allows("other-miniapp")).isFalse();
     }
 
     @Test
     void authenticatedBankAndMiniappFlowWorks() {
-        PLATFORM.enqueue(new MockResponse()
-                .setHeader("Content-Type", "application/json")
-                .setBody("{\"accessToken\":\"host-jwt\",\"expiresIn\":3600,\"tokenType\":\"Bearer\"}"));
-        PLATFORM.enqueue(new MockResponse()
-                .setHeader("Content-Type", "application/json")
-                .setBody(
-                        "[{\"code\":\"payment-service\",\"name\":\"Payment Service\",\"description\":\"Payments\",\"iconUrl\":null,\"entryUrl\":\"http://localhost:3001/start\",\"metadata\":{\"category\":\"finance\"}}]"));
-        PLATFORM.enqueue(new MockResponse()
-                .setHeader("Content-Type", "application/json")
-                .setBody(
-                        "{\"launchUrl\":\"http://localhost:3001/start?ticket=ticket-1\",\"ticketExpiresIn\":60}"));
+        PLATFORM.setDispatcher(new Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) {
+                String path = request.getPath();
+                if ("/api/realms/bank-mobile/auth/token".equals(path)) {
+                    return new MockResponse()
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("{\"accessToken\":\"host-jwt\",\"expiresIn\":3600,\"tokenType\":\"Bearer\"}");
+                }
+                if ("/api/realms/bank-mobile/miniapps/catalog".equals(path)) {
+                    return new MockResponse()
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("[{\"code\":\"payment-service\",\"name\":\"Payment Service\",\"description\":\"Payments\",\"iconUrl\":null,\"entryUrl\":\"http://localhost:3001/start\",\"metadata\":{\"category\":\"finance\"}}]");
+                }
+                if ("/api/realms/bank-mobile/miniapps/payment-service/launch".equals(path)) {
+                    return new MockResponse()
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("{\"launchUrl\":\"http://localhost:3001/start?ticket=ticket-1\",\"ticketExpiresIn\":60}");
+                }
+                return new MockResponse().setResponseCode(404);
+            }
+        });
 
         String username = "flow" + Instant.now().toEpochMilli();
         Map<String, Object> register = post("/api/auth/register", Map.of(
@@ -346,6 +370,103 @@ class KemalessBankApplicationTests {
         Map<String, Object> toAccount = (Map<String, Object>) transfer.get("toAccount");
         assertThat(toAccount.get("currency")).isEqualTo("RUB");
         assertThat(((Number) toAccount.get("id")).longValue()).isEqualTo(expectedRubId);
+    }
+
+    @Test
+    void concurrentInternalTransfersPreventDoubleSpending() throws Exception {
+        String username = "conc" + Instant.now().toEpochMilli();
+        Map<String, Object> register = post("/api/auth/register", Map.of(
+                "username", username,
+                "password", "password123",
+                "fullName", "Concurrent User",
+                "email", username + "@example.com",
+                "phone", "+7 900 500-60-70"));
+        HttpHeaders headers = bearer((String) register.get("accessToken"));
+        List<Map<String, Object>> initial = getList("/api/accounts", headers);
+        Long fromId = ((Number) initial.getFirst().get("id")).longValue();
+        BankAccount fromAccount = accountRepository.findById(fromId).orElseThrow();
+        fromAccount.credit(new BigDecimal("150.00"));
+        accountRepository.save(fromAccount);
+
+        Map<String, Object> target = post("/api/accounts", Map.of("title", "Target", "currency", "RUB"), headers);
+        Long toId = ((Number) target.get("id")).longValue();
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            Callable<ResponseEntity<String>> attempt = () -> {
+                ready.countDown();
+                assertThat(start.await(5, TimeUnit.SECONDS)).isTrue();
+                return rest.exchange(
+                        "/api/transfers/internal",
+                        HttpMethod.POST,
+                        new HttpEntity<>(
+                                Map.of("fromAccountId", fromId, "toAccountId", toId, "amount", 100.00), headers),
+                        String.class);
+            };
+            Future<ResponseEntity<String>> first = pool.submit(attempt);
+            Future<ResponseEntity<String>> second = pool.submit(attempt);
+            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            List<HttpStatus> statuses = new ArrayList<>();
+            statuses.add(HttpStatus.valueOf(first.get(10, TimeUnit.SECONDS).getStatusCode().value()));
+            statuses.add(HttpStatus.valueOf(second.get(10, TimeUnit.SECONDS).getStatusCode().value()));
+
+            assertThat(statuses).containsExactlyInAnyOrder(HttpStatus.OK, HttpStatus.BAD_REQUEST);
+        } finally {
+            pool.shutdownNow();
+        }
+
+        BankAccount updatedFrom = accountRepository.findById(fromId).orElseThrow();
+        BankAccount updatedTo = accountRepository.findById(toId).orElseThrow();
+        assertThat(updatedFrom.getBalance()).isEqualByComparingTo("50.00");
+        assertThat(updatedTo.getBalance()).isEqualByComparingTo("100.00");
+    }
+
+    @Test
+    void miniappTokenAccessIsRestrictedToAllowedMiniappAndEndpoints() {
+        String username = "mapp" + Instant.now().toEpochMilli();
+        post("/api/auth/register", Map.of(
+                "username", username,
+                "password", "password123",
+                "fullName", "Miniapp Scope User",
+                "email", username + "@example.com",
+                "phone", "+7 900 700-80-90"));
+
+        PLATFORM.setDispatcher(new Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) {
+                if ("/api/realms/bank-mobile/auth/introspect".equals(request.getPath())) {
+                    String body = request.getBody().readUtf8();
+                    String miniAppCode = body.contains("miniapp-token-other") ? "other-miniapp" : "payment-service";
+                    return new MockResponse()
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("""
+                                    {"active":true,"type":"MINIAPP_USER_TOKEN","realmCode":"bank-mobile","miniAppCode":"%s","externalUserId":"%s","realmRoles":["USER"]}
+                                    """.formatted(miniAppCode, username));
+                }
+                return new MockResponse().setResponseCode(404);
+            }
+        });
+
+        HttpHeaders otherHeaders = bearer("miniapp-token-other");
+        ResponseEntity<String> rejected = rest.exchange(
+                "/api/accounts", HttpMethod.GET, new HttpEntity<>(otherHeaders), String.class);
+        assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+
+        HttpHeaders allowedHeaders = bearer("miniapp-token-allowed");
+        ResponseEntity<String> allowedAccounts = rest.exchange(
+                "/api/accounts", HttpMethod.GET, new HttpEntity<>(allowedHeaders), String.class);
+        assertThat(allowedAccounts.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        ResponseEntity<String> forbiddenCreateAccount = rest.exchange(
+                "/api/accounts",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of("title", "Blocked", "currency", "RUB"), allowedHeaders),
+                String.class);
+        assertThat(forbiddenCreateAccount.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
     }
 
     private Map<String, Object> post(String path, Object body) {

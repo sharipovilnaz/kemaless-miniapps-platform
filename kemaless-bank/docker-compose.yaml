@@ -4,9 +4,9 @@ services:
     container_name: kemaless_bank_db_pg
     restart: unless-stopped
     environment:
-      POSTGRES_DB: kemaless_bank_db
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: root
+      POSTGRES_DB: ${BANK_DB_NAME:-kemaless_bank_db}
+      POSTGRES_USER: ${BANK_SPRING_DATASOURCE_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${BANK_SPRING_DATASOURCE_PASSWORD:-root}
     command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=5"]
     ports:
       - '5431:5432'

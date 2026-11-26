@@ -4,22 +4,17 @@ import jakarta.servlet.http.HttpServletRequest;
 
 public final class HttpRequestMetadata {
 
+    private static final int MAX_IP_LENGTH = 64;
+
     private HttpRequestMetadata() {
     }
 
     public static String clientIp(HttpServletRequest request) {
-        if (request == null) {
+        if (request == null || request.getRemoteAddr() == null) {
             return "";
         }
-        String xff = request.getHeader("X-Forwarded-For");
-        if (xff != null && !xff.isBlank()) {
-            return xff.split(",")[0].trim();
-        }
-        String realIp = request.getHeader("X-Real-IP");
-        if (realIp != null && !realIp.isBlank()) {
-            return realIp.trim();
-        }
-        return request.getRemoteAddr() == null ? "" : request.getRemoteAddr();
+        String addr = request.getRemoteAddr().trim();
+        return addr.length() <= MAX_IP_LENGTH ? addr : addr.substring(0, MAX_IP_LENGTH);
     }
 
     public static String userAgent(HttpServletRequest request) {

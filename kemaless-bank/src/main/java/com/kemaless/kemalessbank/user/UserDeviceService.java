@@ -7,7 +7,6 @@ import java.security.MessageDigest;
 import java.time.OffsetDateTime;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.Optional;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -17,31 +16,20 @@ import org.springframework.transaction.annotation.Transactional;
 public class UserDeviceService {
 
     private final BankUserDeviceRepository deviceRepository;
-    private final BankUserRepository userRepository;
     private final UserService userService;
 
-    public UserDeviceService(
-            BankUserDeviceRepository deviceRepository, BankUserRepository userRepository, UserService userService) {
+    public UserDeviceService(BankUserDeviceRepository deviceRepository, UserService userService) {
         this.deviceRepository = deviceRepository;
-        this.userRepository = userRepository;
         this.userService = userService;
     }
 
     @Transactional
     public void recordSignIn(BankUser user, HttpServletRequest request) {
-        BankUser ref = userRepository.getReferenceById(user.getId());
         String ip = HttpRequestMetadata.clientIp(request);
         String ua = HttpRequestMetadata.userAgent(request);
         String fp = fingerprint(ua, ip);
         OffsetDateTime now = OffsetDateTime.now();
-        Optional<BankUserDevice> existing = deviceRepository.findForUser(ref.getId(), fp);
-        if (existing.isPresent()) {
-            BankUserDevice row = existing.get();
-            row.touch(ip, ua, now);
-            deviceRepository.save(row);
-        } else {
-            deviceRepository.save(new BankUserDevice(ref, fp, ua.isBlank() ? " " : ua, ip, now));
-        }
+        deviceRepository.upsertDevice(user.getId(), fp, ua.isBlank() ? " " : ua, ip, now);
         log.debug("User device recorded: userId={}, fingerprint={}", user.getId(), fp);
     }
 

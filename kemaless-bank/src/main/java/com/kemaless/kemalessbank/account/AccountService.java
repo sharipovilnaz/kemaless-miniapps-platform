@@ -51,11 +51,21 @@ public class AccountService {
 
     @Transactional
     public BankAccount closeAccount(String username, Long accountId) {
-        BankAccount account = requireUserAccount(username, accountId);
-        if (account.getStatus() != AccountStatus.ACTIVE) {
-            throw new BadRequestException("Закрыть можно только активный счет");
-        }
-        if (accountRepository.countByUserAndStatus(account.getUser(), AccountStatus.ACTIVE) <= 1) {
+        BankUser user = userService.requireByUsername(username);
+        // Блокируем все активные счета пользователя в порядке id, чтобы не закрыть последний при гонке.
+        List<BankAccount> activeAccounts =
+                accountRepository.findAllByUserAndStatusOrderByIdAscForUpdate(user, AccountStatus.ACTIVE);
+        BankAccount account = activeAccounts.stream()
+                .filter(candidate -> candidate.getId().equals(accountId))
+                .findFirst()
+                .orElseGet(() -> {
+                    BankAccount existing = requireUserAccountForUpdate(user, accountId);
+                    if (existing.getStatus() != AccountStatus.ACTIVE) {
+                        throw new BadRequestException("Закрыть можно только активный счет");
+                    }
+                    return existing;
+                });
+        if (activeAccounts.size() <= 1) {
             throw new BadRequestException("Нельзя закрыть последний активный счет");
         }
         if (account.getBalance().compareTo(BigDecimal.ZERO) != 0) {
@@ -68,7 +78,7 @@ public class AccountService {
 
     @Transactional
     public BankAccount blockAccount(String username, Long accountId) {
-        BankAccount account = requireUserAccount(username, accountId);
+        BankAccount account = requireUserAccountForUpdate(userService.requireByUsername(username), accountId);
         if (account.getStatus() != AccountStatus.ACTIVE) {
             throw new BadRequestException("Заблокировать можно только активный счет");
         }
@@ -79,13 +89,18 @@ public class AccountService {
 
     @Transactional
     public BankAccount unblockAccount(String username, Long accountId) {
-        BankAccount account = requireUserAccount(username, accountId);
+        BankAccount account = requireUserAccountForUpdate(userService.requireByUsername(username), accountId);
         if (account.getStatus() != AccountStatus.BLOCKED) {
             throw new BadRequestException("Разблокировать можно только заблокированный счет");
         }
         account.unblock();
         log.info("Account unblocked: username={}, accountId={}", username, accountId);
         return account;
+    }
+
+    private BankAccount requireUserAccountForUpdate(BankUser user, Long accountId) {
+        return accountRepository.findByIdAndUserForUpdate(accountId, user)
+                .orElseThrow(() -> new NotFoundException("Счет не найден"));
     }
 
     private String nextAccountNumber() {

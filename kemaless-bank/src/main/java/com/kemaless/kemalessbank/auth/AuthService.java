@@ -15,7 +15,9 @@ import com.kemaless.kemalessbank.user.UserDto;
 import io.jsonwebtoken.Claims;
 import jakarta.servlet.http.HttpServletRequest;
 import java.math.BigDecimal;
+import java.util.Locale;
 import java.util.Set;
+import java.util.UUID;
 import lombok.extern.slf4j.Slf4j;
 import com.kemaless.miniappsdk.api.MiniAppPlatformClient;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -112,8 +114,13 @@ public class AuthService {
     }
 
     public void notifyPlatformLogout(String username) {
-        if (miniAppPlatformClient != null) {
+        if (miniAppPlatformClient == null) {
+            return;
+        }
+        try {
             miniAppPlatformClient.logoutUser(username);
+        } catch (RuntimeException exception) {
+            log.warn("Miniapp platform logout notification failed for user {}: {}", username, exception.getMessage());
         }
     }
 
@@ -126,7 +133,7 @@ public class AuthService {
                 refreshToken.token(),
                 refreshToken.expiresAt(),
                 "Bearer",
-                UserDto.from(user, accountRepository.sumActiveBalanceByUser(user)));
+                UserDto.from(user, accountRepository.sumActiveBalancesByCurrency(user)));
     }
 
     private String blankToNull(String value) {
@@ -134,10 +141,20 @@ public class AuthService {
     }
 
     private String accountNumberFor(String username) {
-        String normalized = username.toUpperCase().replaceAll("[^A-Z0-9]", "");
+        String normalized = username.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]", "");
         if (normalized.length() > 25) {
             normalized = normalized.substring(0, 25);
         }
-        return "KML-" + normalized + "-0001";
+        if (!normalized.isEmpty()) {
+            String candidate = "KML-" + normalized + "-0001";
+            if (!accountRepository.existsByAccountNumber(candidate)) {
+                return candidate;
+            }
+        }
+        String fallback;
+        do {
+            fallback = "KML-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase(Locale.ROOT);
+        } while (accountRepository.existsByAccountNumber(fallback));
+        return fallback;
     }
 }

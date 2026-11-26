@@ -2,18 +2,24 @@ package com.kemaless.kemalessbank.operation;
 
 import com.kemaless.kemalessbank.account.AccountResponse;
 import com.kemaless.kemalessbank.account.AccountStatus;
+import com.kemaless.kemalessbank.account.AccountTargetProjection;
 import com.kemaless.kemalessbank.account.BankAccount;
 import com.kemaless.kemalessbank.account.BankAccountRepository;
 import com.kemaless.kemalessbank.common.BadRequestException;
-import com.kemaless.kemalessbank.common.NotFoundException;
 import com.kemaless.kemalessbank.common.ConflictException;
+import com.kemaless.kemalessbank.common.NotFoundException;
 import com.kemaless.kemalessbank.user.BankUser;
 import com.kemaless.kemalessbank.user.BankUserRepository;
 import com.kemaless.kemalessbank.user.UserService;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,6 +27,8 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 @Slf4j
 public class OperationService {
+
+    private static final BigDecimal MAX_TRANSFER_AMOUNT = new BigDecimal("999999999999999.99");
 
     private final UserService userService;
     private final BankUserRepository userRepository;
@@ -67,12 +75,18 @@ public class OperationService {
         if (request.fromAccountId().equals(request.toAccountId())) {
             throw new BadRequestException("Выберите два разных счета");
         }
-        if (request.amount().compareTo(BigDecimal.ZERO) <= 0) {
-            throw new BadRequestException("Сумма перевода должна быть больше нуля");
-        }
+        BigDecimal amount = normalizeAmount(request.amount());
 
-        BankAccount fromAccount = requireUserAccount(username, request.fromAccountId());
-        BankAccount toAccount = requireUserAccount(username, request.toAccountId());
+        BankUser user = userService.requireByUsername(username);
+        // Проверяем принадлежность обоих счетов скалярным запросом, не помещая сущности в L1-кеш до FOR UPDATE.
+        accountRepository.findCurrencyByIdAndUser(request.fromAccountId(), user)
+                .orElseThrow(() -> new NotFoundException("Счет не найден"));
+        accountRepository.findCurrencyByIdAndUser(request.toAccountId(), user)
+                .orElseThrow(() -> new NotFoundException("Счет не найден"));
+
+        Map<Long, BankAccount> lockedAccounts = lockAccountsOrdered(request.fromAccountId(), request.toAccountId());
+        BankAccount fromAccount = requireLockedOwnedAccount(lockedAccounts, request.fromAccountId(), user.getId());
+        BankAccount toAccount = requireLockedOwnedAccount(lockedAccounts, request.toAccountId(), user.getId());
         requireActive(fromAccount, "Счет списания должен быть активным");
         requireActive(toAccount, "Счет зачисления должен быть активным");
         if (!currenciesMatch(fromAccount.getCurrency(), toAccount.getCurrency())) {
@@ -82,19 +96,19 @@ public class OperationService {
                     + normalizeCurrency(toAccount.getCurrency())
                     + ")");
         }
-        if (fromAccount.getBalance().compareTo(request.amount()) < 0) {
+        if (fromAccount.getBalance().compareTo(amount) < 0) {
             throw new BadRequestException("Недостаточно средств на счете");
         }
 
-        fromAccount.debit(request.amount());
-        toAccount.credit(request.amount());
+        fromAccount.debit(amount);
+        toAccount.credit(amount);
         String description = normalizeDescription(request.description());
         BankOperation outgoing = operationRepository.save(new BankOperation(
                 fromAccount.getUser(),
                 fromAccount,
                 toAccount,
                 OperationType.TRANSFER_OUT,
-                request.amount(),
+                amount,
                 fromAccount.getCurrency(),
                 description));
         BankOperation incoming = operationRepository.save(new BankOperation(
@@ -102,7 +116,7 @@ public class OperationService {
                 toAccount,
                 fromAccount,
                 OperationType.TRANSFER_IN,
-                request.amount(),
+                amount,
                 toAccount.getCurrency(),
                 description));
         log.info(
@@ -110,7 +124,7 @@ public class OperationService {
                 username,
                 fromAccount.getId(),
                 toAccount.getId(),
-                request.amount());
+                amount);
         return new TransferResponse(
                 AccountResponse.from(fromAccount),
                 AccountResponse.from(toAccount),
@@ -119,31 +133,43 @@ public class OperationService {
 
     @Transactional
     public TransferResponse transferToAnotherUser(String senderUsername, PeerTransferRequest request) {
-        if (request.amount().compareTo(BigDecimal.ZERO) <= 0) {
-            throw new BadRequestException("Сумма перевода должна быть больше нуля");
-        }
+        BigDecimal amount = normalizeAmount(request.amount());
         BankUser sender = userService.requireByUsername(senderUsername);
-        BankAccount fromAccount = requireUserAccount(senderUsername, request.fromAccountId());
-        requireActive(fromAccount, "Счет списания должен быть активным");
-        if (fromAccount.getBalance().compareTo(request.amount()) < 0) {
-            throw new BadRequestException("Недостаточно средств на счете");
-        }
+        // Скалярная выборка валюты до блокировки не даёт L1-кешу Hibernate затенить актуальный баланс после FOR UPDATE.
+        String fromCurrency = accountRepository.findCurrencyByIdAndUser(request.fromAccountId(), sender)
+                .orElseThrow(() -> new NotFoundException("Счет не найден"));
 
         BankUser recipient = resolveRecipient(request.recipient().trim());
         if (recipient.getId().equals(sender.getId())) {
             throw new BadRequestException("Нельзя перевести средства самому себе");
         }
-        BankAccount toAccount = resolveRecipientCreditAccount(recipient, fromAccount, request.toAccountNumber());
+        Long targetAccountId = resolveRecipientCreditAccountId(recipient, fromCurrency, request.toAccountNumber());
 
-        fromAccount.debit(request.amount());
-        toAccount.credit(request.amount());
+        Map<Long, BankAccount> lockedAccounts = lockAccountsOrdered(request.fromAccountId(), targetAccountId);
+        BankAccount fromAccount = requireLockedOwnedAccount(lockedAccounts, request.fromAccountId(), sender.getId());
+        BankAccount toAccount = requireLockedOwnedAccount(lockedAccounts, targetAccountId, recipient.getId());
+        requireActive(fromAccount, "Счет списания должен быть активным");
+        requireActive(toAccount, "Счёт зачисления получателя должен быть активным");
+        if (!currenciesMatch(fromAccount.getCurrency(), toAccount.getCurrency())) {
+            throw new BadRequestException("Валюта счёта зачисления ("
+                    + normalizeCurrency(toAccount.getCurrency())
+                    + ") должна совпадать со счётом списания ("
+                    + normalizeCurrency(fromAccount.getCurrency())
+                    + ")");
+        }
+        if (fromAccount.getBalance().compareTo(amount) < 0) {
+            throw new BadRequestException("Недостаточно средств на счете");
+        }
+
+        fromAccount.debit(amount);
+        toAccount.credit(amount);
         String description = normalizePeerDescription(request.description(), recipient.getUsername());
         BankOperation outgoing = operationRepository.save(new BankOperation(
                 sender,
                 fromAccount,
                 toAccount,
                 OperationType.TRANSFER_OUT,
-                request.amount(),
+                amount,
                 fromAccount.getCurrency(),
                 description));
         BankOperation incoming = operationRepository.save(new BankOperation(
@@ -151,20 +177,54 @@ public class OperationService {
                 toAccount,
                 fromAccount,
                 OperationType.TRANSFER_IN,
-                request.amount(),
+                amount,
                 toAccount.getCurrency(),
                 description));
         log.info(
                 "Peer transfer: from={}, toUser={}, amount={}, fromAccountId={}, toAccountId={}",
                 senderUsername,
                 recipient.getUsername(),
-                request.amount(),
+                amount,
                 fromAccount.getId(),
                 toAccount.getId());
         return new TransferResponse(
                 AccountResponse.from(fromAccount),
                 AccountResponse.from(toAccount),
                 List.of(OperationResponse.from(outgoing), OperationResponse.from(incoming)));
+    }
+
+    private Map<Long, BankAccount> lockAccountsOrdered(Long firstAccountId, Long secondAccountId) {
+        List<Long> sortedIds = Stream.of(firstAccountId, secondAccountId)
+                .distinct()
+                .sorted()
+                .toList();
+        return accountRepository.findAllByIdInOrderByIdAscForUpdate(sortedIds).stream()
+                .collect(Collectors.toMap(BankAccount::getId, Function.identity()));
+    }
+
+    private BankAccount requireLockedOwnedAccount(
+            Map<Long, BankAccount> lockedAccounts,
+            Long accountId,
+            Long expectedUserId) {
+        BankAccount account = lockedAccounts.get(accountId);
+        if (account == null || !account.getUser().getId().equals(expectedUserId)) {
+            throw new NotFoundException("Счет не найден");
+        }
+        return account;
+    }
+
+    static BigDecimal normalizeAmount(BigDecimal rawAmount) {
+        if (rawAmount == null || rawAmount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BadRequestException("Сумма перевода должна быть больше нуля");
+        }
+        if (rawAmount.stripTrailingZeros().scale() > 2) {
+            throw new BadRequestException("Сумма перевода должна содержать не более 2 знаков после запятой");
+        }
+        BigDecimal normalized = rawAmount.setScale(2, RoundingMode.UNNECESSARY);
+        if (normalized.compareTo(MAX_TRANSFER_AMOUNT) > 0) {
+            throw new BadRequestException("Сумма перевода превышает допустимый предел");
+        }
+        return normalized;
     }
 
     private BankUser resolveRecipient(String raw) {
@@ -193,29 +253,29 @@ public class OperationService {
         return digits.length() >= 10;
     }
 
-    private BankAccount resolveRecipientCreditAccount(BankUser recipient, BankAccount fromAccount, String toAccountNumber) {
-        String fromCur = normalizeCurrency(fromAccount.getCurrency());
+    private Long resolveRecipientCreditAccountId(BankUser recipient, String fromCurrency, String toAccountNumber) {
+        String fromCur = normalizeCurrency(fromCurrency);
         if (toAccountNumber != null && !toAccountNumber.isBlank()) {
             String normalizedNumber = toAccountNumber.trim();
-            BankAccount explicit = accountRepository
-                    .findByAccountNumber(normalizedNumber)
+            AccountTargetProjection explicit = accountRepository
+                    .findTargetProjectionByAccountNumber(normalizedNumber)
                     .orElseThrow(() -> new NotFoundException("Счёт с номером «" + normalizedNumber + "» не найден"));
-            if (!explicit.getUser().getId().equals(recipient.getId())) {
+            if (!explicit.userId().equals(recipient.getId())) {
                 throw new BadRequestException("Указанный счёт не принадлежит выбранному получателю");
             }
-            requireActive(explicit, "Счёт зачисления получателя должен быть активным");
-            if (!currenciesMatch(explicit.getCurrency(), fromCur)) {
+            if (explicit.status() != AccountStatus.ACTIVE) {
+                throw new BadRequestException("Счёт зачисления получателя должен быть активным");
+            }
+            if (!currenciesMatch(explicit.currency(), fromCur)) {
                 throw new BadRequestException("Валюта счёта по номеру ("
-                        + normalizeCurrency(explicit.getCurrency())
+                        + normalizeCurrency(explicit.currency())
                         + ") должна совпадать со счётом списания ("
                         + fromCur
                         + ")");
             }
-            return explicit;
+            return explicit.id();
         }
-        return accountRepository.findAllByUserOrderByIdAsc(recipient).stream()
-                .filter(a -> a.getStatus() == AccountStatus.ACTIVE)
-                .filter(a -> currenciesMatch(a.getCurrency(), fromCur))
+        return accountRepository.findActiveIdsByUserAndCurrencyOrderByIdAsc(recipient, fromCur).stream()
                 .findFirst()
                 .orElseThrow(() -> new BadRequestException(
                         "У получателя нет активного счёта в валюте "
