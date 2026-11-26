@@ -62,7 +62,7 @@ services:
     restart: unless-stopped
 
   minio:
-    image: minio/minio:latest
+    image: pgsty/silo:RELEASE.2026-11-12T00-00-00Z
     container_name: miniapp-minio
     command: server /data --console-address ":9001"
     environment:
