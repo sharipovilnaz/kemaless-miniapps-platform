@@ -3,6 +3,7 @@ package com.kemaless.kemalessbank.security;
 import com.kemaless.kemalessbank.config.BankSecurityProperties;
 import com.kemaless.miniappsdk.api.MiniAppPlatformClient;
 import com.kemaless.miniappsdk.api.dto.TokenIntrospectionResult;
+import com.kemaless.miniappsdk.config.MiniAppSdkProperties;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
 import jakarta.servlet.FilterChain;
@@ -31,14 +32,17 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final JwtService jwtService;
     private final MiniAppPlatformClient miniAppPlatformClient;
     private final BankSecurityProperties properties;
+    private final MiniAppSdkProperties sdkProperties;
 
     public JwtAuthenticationFilter(
             JwtService jwtService,
             ObjectProvider<MiniAppPlatformClient> miniAppPlatformClient,
-            BankSecurityProperties properties) {
+            BankSecurityProperties properties,
+            ObjectProvider<MiniAppSdkProperties> sdkProperties) {
         this.jwtService = jwtService;
         this.miniAppPlatformClient = miniAppPlatformClient.getIfAvailable();
         this.properties = properties;
+        this.sdkProperties = sdkProperties.getIfAvailable();
     }
 
     @Override
@@ -111,8 +115,15 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     || introspection.getExternalUserId().isBlank()) {
                 return false;
             }
-            if (introspection.getType() != null && !MINIAPP_TOKEN_TYPE.equals(introspection.getType())) {
+            if (!MINIAPP_TOKEN_TYPE.equals(introspection.getType())) {
                 log.warn("Miniapp token rejected: unexpected type={}", introspection.getType());
+                return false;
+            }
+            String expectedRealmCode = sdkProperties == null ? null : sdkProperties.getRealmCode();
+            if (expectedRealmCode != null
+                    && !expectedRealmCode.isBlank()
+                    && !expectedRealmCode.trim().equals(introspection.getRealmCode())) {
+                log.warn("Miniapp token rejected: unexpected realmCode={}", introspection.getRealmCode());
                 return false;
             }
             if (!properties.miniappApi().allows(introspection.getMiniAppCode())) {
@@ -132,13 +143,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     }
 
     private Collection<GrantedAuthority> miniAppAuthorities(TokenIntrospectionResult introspection) {
-        // Miniapp-сессия получает отдельную роль без прямых прав банковского пользователя (закрытие/блокировка счетов и т.д.).
+        // Контракт introspection не выдаёт OAuth scopes, поэтому назначаем только роль клиента miniapp и префиксированные realmRoles.
         List<GrantedAuthority> authorities = new ArrayList<>();
         authorities.add(new SimpleGrantedAuthority("ROLE_MINIAPP_CLIENT"));
-        authorities.add(new SimpleGrantedAuthority("SCOPE_host.profile.read"));
-        authorities.add(new SimpleGrantedAuthority("SCOPE_host.accounts.read"));
-        authorities.add(new SimpleGrantedAuthority("SCOPE_host.operations.read"));
-        authorities.add(new SimpleGrantedAuthority("SCOPE_host.transfers.peer.write"));
         List<String> realmRoles = introspection.getRealmRoles();
         if (realmRoles != null) {
             realmRoles.stream()

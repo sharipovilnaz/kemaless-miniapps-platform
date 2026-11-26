@@ -12,7 +12,6 @@ import org.springframework.ai.content.Media;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.Resource;
-import org.springframework.core.io.UrlResource;
 import org.springframework.stereotype.Service;
 import org.springframework.util.MimeType;
 import org.springframework.util.MimeTypeUtils;
@@ -20,7 +19,6 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.net.InetAddress;
 import java.net.URI;
 import java.text.Normalizer;
 import java.util.List;
@@ -92,66 +90,139 @@ public class AdminCopilotMediaService {
     }
 
     private Media toMedia(AdminCopilotAttachmentRequest attachment) {
+        if (attachment == null) {
+            throw new IllegalArgumentException("Вложение не задано");
+        }
         String mimeTypeValue = normalizeMimeType(attachment.mimeType());
         MimeType mimeType = MimeTypeUtils.parseMimeType(mimeTypeValue);
 
         if (attachment.objectKey() != null && !attachment.objectKey().isBlank()) {
-            String objectKey = attachment.objectKey().trim();
-            if (!objectKey.startsWith("admin-copilot/") || objectKey.contains("..")) {
-                throw new IllegalArgumentException("Недопустимый objectKey вложения");
-            }
+            String objectKey = validateObjectKey(attachment.objectKey());
             Resource resource = loadFromMinio(objectKey, attachment.fileName());
             return new Media(mimeType, resource);
         }
 
         if (attachment.url() != null && !attachment.url().isBlank()) {
-            URI safeUri = validateAttachmentUri(attachment.url().trim());
-            return new Media(mimeType, UrlResource.from(safeUri));
+            // Запрещаем внешние HTTP-запросы (редиректы, DNS rebinding, IPv6/спецдиапазоны) и грузим только из доверенного MinIO.
+            String objectKey = extractTrustedStorageObjectKey(attachment.url());
+            Resource resource = loadFromMinio(objectKey, attachment.fileName());
+            return new Media(mimeType, resource);
         }
 
         throw new IllegalArgumentException("Для вложения требуется objectKey или url");
     }
 
-    private URI validateAttachmentUri(String rawUrl) {
+    private String validateObjectKey(String rawObjectKey) {
+        String objectKey = rawObjectKey == null ? "" : rawObjectKey.trim();
+        if (!objectKey.startsWith("admin-copilot/")
+                || objectKey.length() <= "admin-copilot/".length()
+                || objectKey.contains("..")
+                || objectKey.contains("\\")
+                || objectKey.contains("//")
+                || objectKey.contains("?")
+                || objectKey.contains("#")
+                || objectKey.contains("%")
+                || containsWhitespaceOrControl(objectKey)) {
+            throw new IllegalArgumentException("Недопустимый objectKey вложения");
+        }
+        for (String segment : objectKey.split("/", -1)) {
+            if (segment.isEmpty() || ".".equals(segment) || "..".equals(segment)) {
+                throw new IllegalArgumentException("Недопустимый objectKey вложения");
+            }
+        }
+        return objectKey;
+    }
+
+    private String extractTrustedStorageObjectKey(String rawUrl) {
+        String trimmed = rawUrl == null ? "" : rawUrl.trim();
+        if (trimmed.isEmpty()
+                || trimmed.contains("\\")
+                || trimmed.contains("?")
+                || trimmed.contains("#")
+                || trimmed.contains("%")
+                || containsWhitespaceOrControl(trimmed)) {
+            throw new IllegalArgumentException("Недопустимый URL вложения");
+        }
+
         URI uri;
         try {
-            uri = URI.create(rawUrl);
+            uri = URI.create(trimmed);
         } catch (IllegalArgumentException exception) {
             throw new IllegalArgumentException("Некорректный URL вложения", exception);
         }
+
         String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
-        if (!"https".equals(scheme) && !"http".equals(scheme)) {
-            throw new IllegalArgumentException("Разрешены только HTTP/HTTPS URL для вложений");
+        if (!uri.isAbsolute() || (!"https".equals(scheme) && !"http".equals(scheme))) {
+            throw new IllegalArgumentException("Разрешены только HTTP/HTTPS URL доверенного хранилища");
         }
-        String host = uri.getHost();
+        if (uri.getRawUserInfo() != null || uri.getRawQuery() != null || uri.getRawFragment() != null) {
+            throw new IllegalArgumentException("URL вложения содержит недопустимые компоненты");
+        }
+
+        URI baseUri = parseTrustedBaseUri();
+        if (!scheme.equalsIgnoreCase(baseUri.getScheme())
+                || !canonicalHost(uri.getHost()).equals(canonicalHost(baseUri.getHost()))
+                || effectivePort(uri) != effectivePort(baseUri)) {
+            throw new IllegalArgumentException("Разрешена загрузка вложений только из доверенного хранилища MinIO");
+        }
+
+        String rawPath = uri.getRawPath();
+        String normalizedPath = uri.normalize().getRawPath();
+        if (rawPath == null || !rawPath.equals(normalizedPath) || rawPath.contains("..")) {
+            throw new IllegalArgumentException("Недопустимый путь URL вложения");
+        }
+
+        String bucket = bucket();
+        if (bucket == null || bucket.isBlank()) {
+            throw new IllegalArgumentException("Бакет MinIO не настроен");
+        }
+
+        String basePath = trimTrailingSlash(baseUri.getRawPath());
+        String expectedPrefix = basePath + "/" + bucket.trim() + "/";
+        if (!rawPath.startsWith(expectedPrefix)) {
+            throw new IllegalArgumentException("URL вложения не принадлежит настроенному бакету MinIO");
+        }
+        return validateObjectKey(rawPath.substring(expectedPrefix.length()));
+    }
+
+    private URI parseTrustedBaseUri() {
+        String configuredPublicBase = publicBaseUrl();
+        if (configuredPublicBase.isEmpty()) {
+            throw new IllegalArgumentException("Доверенное хранилище MinIO public-base-url не настроен");
+        }
+        URI baseUri;
+        try {
+            baseUri = URI.create(configuredPublicBase);
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException("Некорректный public-base-url MinIO", exception);
+        }
+        if (!baseUri.isAbsolute()
+                || baseUri.getHost() == null
+                || baseUri.getHost().isBlank()
+                || baseUri.getRawUserInfo() != null) {
+            throw new IllegalArgumentException("Некорректный public-base-url MinIO");
+        }
+        return baseUri;
+    }
+
+    private static String canonicalHost(String host) {
         if (host == null || host.isBlank()) {
             throw new IllegalArgumentException("URL вложения должен содержать host");
         }
-        // Разрешаем URL из сконфигурированного публичного бакета MinIO, но блокируем локальные/приватные адреса против SSRF.
-        String configuredPublicBase = publicBaseUrl();
-        if (!configuredPublicBase.isEmpty() && rawUrl.startsWith(configuredPublicBase + "/")) {
-            return uri;
+        String normalized = host.trim().toLowerCase(Locale.ROOT);
+        return normalized.endsWith(".") ? normalized.substring(0, normalized.length() - 1) : normalized;
+    }
+
+    private static int effectivePort(URI uri) {
+        int port = uri.getPort();
+        if (port >= 0) {
+            return port;
         }
-        try {
-            InetAddress[] addresses = InetAddress.getAllByName(host);
-            if (addresses.length == 0) {
-                throw new IllegalArgumentException("Не удалось разрешить host вложения");
-            }
-            for (InetAddress address : addresses) {
-                if (address.isAnyLocalAddress()
-                        || address.isLoopbackAddress()
-                        || address.isLinkLocalAddress()
-                        || address.isSiteLocalAddress()
-                        || address.isMulticastAddress()) {
-                    throw new IllegalArgumentException("Запрещён доступ к локальному или приватному адресу вложения");
-                }
-            }
-        } catch (IllegalArgumentException exception) {
-            throw exception;
-        } catch (Exception exception) {
-            throw new IllegalArgumentException("Не удалось проверить адрес вложения", exception);
-        }
-        return uri;
+        return "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
+    }
+
+    private static boolean containsWhitespaceOrControl(String value) {
+        return value.chars().anyMatch(ch -> Character.isWhitespace(ch) || Character.isISOControl(ch));
     }
 
     private Resource loadFromMinio(String objectKey, String fileName) {
