@@ -70,7 +70,7 @@ public class AdminAuthService{
         );
     }
 
-    @Transactional
+    @Transactional(noRollbackFor = AuthException.class)
     public TokenResponse refresh(RefreshTokenRequest request) {
         String oldTokenHash = tokenHashService.hash(request.refreshToken());
         AdminRefreshToken oldToken = refreshTokenRepository.findByTokenHash(oldTokenHash)

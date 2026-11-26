@@ -28,7 +28,7 @@ public class UserController {
     @GetMapping({"/api/users/me", "/api/me"})
     public UserDto me(Principal principal) {
         BankUser user = userService.requireByUsername(principal.getName());
-        return UserDto.from(user, accountRepository.sumActiveBalanceByUser(user));
+        return UserDto.from(user, accountRepository.sumActiveBalancesByCurrency(user));
     }
 
     @GetMapping("/api/users/me/devices")
@@ -39,7 +39,7 @@ public class UserController {
     @PutMapping("/api/users/me")
     public UserDto updateMe(@Valid @RequestBody UpdateProfileRequest request, Principal principal) {
         BankUser user = userService.updateProfile(principal.getName(), request);
-        return UserDto.from(user, accountRepository.sumActiveBalanceByUser(user));
+        return UserDto.from(user, accountRepository.sumActiveBalancesByCurrency(user));
     }
 
     @PutMapping("/api/users/me/password")

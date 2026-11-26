@@ -52,7 +52,11 @@ public record BankSecurityProperties(Jwt jwt, Cors cors, Csp csp, MiniappApi min
         }
 
         public boolean allows(String miniAppCode) {
-            return miniAppCode != null && (allowedCodes.isEmpty() || allowedCodes.contains(miniAppCode));
+            if (miniAppCode == null) {
+                return false;
+            }
+            String normalized = miniAppCode.trim();
+            return !normalized.isEmpty() && !allowedCodes.isEmpty() && allowedCodes.contains(normalized);
         }
     }
 }

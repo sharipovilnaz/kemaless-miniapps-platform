@@ -27,6 +27,9 @@ public class RealmClientSecretService {
     }
 
     public boolean matches(String rawSecret, String secretHash) {
+        if (rawSecret == null || rawSecret.isBlank() || secretHash == null || secretHash.isBlank()) {
+            return false;
+        }
         String rawSecretHash = hashSecret(rawSecret);
         return MessageDigest.isEqual(
                 rawSecretHash.getBytes(StandardCharsets.UTF_8),

@@ -3,6 +3,7 @@ package com.kemaless.core.ai.service;
 import com.kemaless.core.ai.dto.api.AdminCopilotAttachmentRequest;
 import com.kemaless.core.ai.exception.AiUnavailableException;
 import com.kemaless.core.ai.repository.AiChatMessageRepository;
+import com.kemaless.core.auth.dto.AdminJwtPrincipal;
 import com.kemaless.core.model.AiRole;
 import com.openai.errors.PermissionDeniedException;
 import org.springframework.ai.chat.client.ChatClient;
@@ -35,7 +36,12 @@ public class AdminCopilotServiceImpl {
         this.adminCopilotMediaService = adminCopilotMediaService;
     }
 
-    public String askCopilot(UUID sessionId, String userMessage, List<AdminCopilotAttachmentRequest> attachments) {
+    public String askCopilot(
+            AdminJwtPrincipal principal,
+            UUID sessionId,
+            String userMessage,
+            List<AdminCopilotAttachmentRequest> attachments
+    ) {
         ChatClient client = chatClient.getIfAvailable();
         if (client == null) {
             throw new AiUnavailableException("Copilot недоступен: ChatClient не создан (проверьте platform.ai.copilot.enabled и LLM).");
@@ -43,7 +49,7 @@ public class AdminCopilotServiceImpl {
 
         UserMessage message = UserMessage.builder()
                 .text(userMessage)
-                .media(adminCopilotMediaService.toMedia(attachments))
+                .media(adminCopilotMediaService.toMedia(principal, attachments))
                 .build();
 
         ChatResponse response;

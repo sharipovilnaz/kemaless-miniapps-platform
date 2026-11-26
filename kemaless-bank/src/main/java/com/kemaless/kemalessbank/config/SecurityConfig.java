@@ -6,6 +6,7 @@ import java.util.List;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -59,8 +60,13 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/", "/index.html", "/app.js", "/styles.css", "/assets/**").permitAll()
                         .requestMatchers("/api/health", "/actuator/health", "/actuator/info").permitAll()
-                        .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/auth/login", "/api/auth/register", "/api/auth/refresh").permitAll()
-                        .anyRequest().authenticated())
+                        .requestMatchers(HttpMethod.POST, "/api/auth/login", "/api/auth/register", "/api/auth/refresh").permitAll()
+                        // Miniapp-токены ограничены минимальным контрактом payment-miniapp; управление счетами/профилем/запуском — только BANK_USER.
+                        .requestMatchers(HttpMethod.GET, "/api/users/me", "/api/accounts", "/api/operations")
+                                .hasAnyRole("BANK_USER", "MINIAPP_CLIENT")
+                        .requestMatchers(HttpMethod.POST, "/api/transfers/peer")
+                                .hasAnyRole("BANK_USER", "MINIAPP_CLIENT")
+                        .anyRequest().hasRole("BANK_USER"))
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
                 .build();
     }

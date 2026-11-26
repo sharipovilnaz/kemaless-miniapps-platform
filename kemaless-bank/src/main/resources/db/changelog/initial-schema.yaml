@@ -395,3 +395,23 @@ databaseChangeLog:
                   name: user_id
               - column:
                   name: last_seen_at
+
+  - changeSet:
+      id: add-bank-account-version
+      author: kemaless-bank
+      preConditions:
+        onFail: MARK_RAN
+        not:
+          columnExists:
+            tableName: bank_account
+            columnName: version
+      changes:
+        - addColumn:
+            tableName: bank_account
+            columns:
+              - column:
+                  name: version
+                  type: BIGINT
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false

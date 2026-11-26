@@ -3,6 +3,7 @@ package com.kemaless.core.ai.configuration;
 import com.kemaless.core.ai.dto.tool.AuditDto;
 import com.kemaless.core.ai.dto.tool.AuditRequest;
 import com.kemaless.core.audit.repository.AuditEventRepository;
+import com.kemaless.core.security.AdminPermissionEvaluator;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
@@ -15,6 +16,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Description;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -56,10 +60,18 @@ public class AiConfiguration {
             limit ограничивает количество событий (если не задан, будет использовано значение по умолчанию).
             Дополнительно можно сузить выборку по action и status.
             """)
-    public Function<AuditRequest, List<AuditDto>> auditLogFetcherFunction(AuditEventRepository auditEventRepository) {
+    public Function<AuditRequest, List<AuditDto>> auditLogFetcherFunction(
+            AuditEventRepository auditEventRepository,
+            AdminPermissionEvaluator adminPermissionEvaluator) {
         return request -> {
             if (request == null || request.realmCode() == null || request.realmCode().isBlank()) {
                 throw new IllegalArgumentException("realmCode is required");
+            }
+            String realmCode = request.realmCode().trim();
+            // Ограничиваем чтение audit-логов правами текущего пользователя, чтобы не допускать меж-реалмовых утечек через LLM tool.
+            Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+            if (!adminPermissionEvaluator.canViewAudit(authentication, realmCode)) {
+                throw new AccessDeniedException("Недостаточно прав для чтения аудита realm " + realmCode);
             }
 
             int lookbackMinutes = request.lookbackMinutes() == null ? 15 : Math.max(1, request.lookbackMinutes());
@@ -67,7 +79,7 @@ public class AiConfiguration {
             Instant fromTime = Instant.now().minusSeconds((long) lookbackMinutes * 60);
 
             return auditEventRepository.findRecentEvents(
-                            request.realmCode().trim(),
+                            realmCode,
                             fromTime,
                             normalize(request.action()),
                             normalize(request.status()),

@@ -112,6 +112,11 @@ public class AdminPermissionEvaluator {
         return canViewAudit(authentication, realmCode);
     }
 
+    public boolean canUseCopilot(Authentication authentication) {
+        return isAuthenticated(authentication)
+                && (isRoot(authentication) || isPlatformAdmin(authentication) || isPlatformAuditor(authentication));
+    }
+
     private boolean isRoot(Authentication authentication) {
         return role(authentication) == GlobalRole.ROOT;
     }

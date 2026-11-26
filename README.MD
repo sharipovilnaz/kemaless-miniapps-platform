@@ -1,155 +1,79 @@
-# MiniApp Platform
+# Kemaless MiniApps Platform
 
-Платформа для централизованного управления и мониторинга miniapp, а также безопасного запуска miniapp из host-приложений через SSO.
+Платформа для централизованного управления, контроля доступа и безопасного SSO-запуска встраиваемых miniapp-сервисов из внешних host-приложений.
 
-В этом README описаны две части проекта:
+> Происхождение проекта: платформа создана командой в рамках хакатона (оригинальный репозиторий с историей разработки команды: [kemalthes/miniapp-platform](https://github.com/kemalthes/miniapp-platform)). В текущем репозитории размещена сборка платформы с исправлениями конфигурации, безопасности и тестами.
 
-- `core` - backend платформы MiniApp на Spring Boot;
-- `miniapp-sdk` - Java SDK для backend-сервиса host-приложения.
+## Назначение и решаемые задачи
 
-## Какую проблему решает проект
+Прямая интеграция каждого miniapp с каждым host-приложением приводит к дублированию авторизации, передаче лишних пользовательских данных через браузер и отсутствию единого механизма отзыва сессий. Платформа инкапсулирует эти задачи в иерархической модели `Platform -> Realm -> RealmClient -> RealmMiniApp`:
 
-Обычная интеграция miniapp с host-приложением быстро приводит к проблемам:
+- **Единая B2B-интеграция для host-приложения**: host-бэкенд интегрируется с платформой один раз через `miniapp-sdk` по `realmCode + clientId + clientSecret` и получает доступ к каталогу опубликованных miniapp.
+- **Маппинг ролей и политики доступа**: host-приложение передаёт свои внешние роли (`externalRoles`), платформа преобразует их в роли realm (`ExternalRoleMapping`) и проверяет `AccessPolicy` (`PUBLIC_IN_REALM`, `AUTHENTICATED`, `ROLE_BASED` с режимом `ANY` или `ALL`).
+- **Безопасный SSO через одноразовый ticket**: в URL запуска передаётся только короткоживущий одноразовый `launch ticket` (хранится в БД в виде HMAC-SHA256 хеша, обмен выполняется под пессимистической блокировкой). Токены сессии в URL не попадают.
+- **Сквозная проверка и отзыв сессий**: `MiniAppJwt` проверяется через introspection endpoint платформы, а logout пользователя на стороне host-приложения отзывает все его активные miniapp-сессии в рамках realm.
+- **Наблюдаемость и AI Copilot**: аудит ключевых событий (`audit_events`), метрики запусков и отказов по realm/miniapp, опциональный RAG + AI-ассистент администратора на базе Spring AI, `pgvector` и MinIO.
 
-- host-приложение вынуждено передавать пользовательские данные и роли напрямую в miniapp;
-- miniapp часто получает слишком много доверия к данным из браузера;
-- logout из host-приложения не отзывает miniapp-сессии;
-- разные host-приложения используют разные роли, и miniapp приходится знать чужие role codes;
-- сложно централизованно проверять доступ, аудит и lifecycle токенов.
+## Архитектура компонентов
 
-Платформа решает это через модель `Platform -> Realm -> Realm Client -> MiniApp`.
+| Модуль | Стек | Назначение |
+| --- | --- | --- |
+| `core` | Java 21, Spring Boot 3.5.14, Spring Security, JPA, Liquibase, PostgreSQL (`pgvector`), MinIO, Spring AI 1.1.6 | Центральное ядро: админ-API, SSO/JWT/introspection, управление realms, ролями, политиками доступа, аудит и AI Copilot |
+| `miniapp-sdk` | Java 21, Spring Boot 3.5.14 Starter (`RestClient`) | Библиотека автоконфигурации (`MiniAppPlatformClient`) для backend host-приложений: кеширование host-токена, каталог, launch, logout, introspect |
+| `frontend` | React 18, TypeScript 5.9, Vite 7, Ant Design 6, TanStack Query, Zustand, Recharts | Web-панель администратора платформы: управление realms, клиентами, ролями, маппингом, miniapp, дашборд метрик и чат AI Copilot |
+| `payment-miniapp` | Java 21, Spring Boot 3.5.14, Vanilla JS SPA | Демонстрационный платёжный miniapp: обмен launch ticket на miniapp-сессию через `/api/session/exchange`, CSP `frame-ancestors`, проксирование запросов в host API по Bearer JWT |
+| `kemaless-bank` | Java 21, Spring Boot, React/Vite | Демонстрационное банковское host-приложение: интеграция с платформой через `miniapp-sdk`, встраивание miniapp в `<iframe>`, проверка miniapp-токенов через introspection |
+| `gitops` | Prometheus, Alertmanager, Grafana, Loki, Tempo, OTel Collector, Alloy | Заготовки конфигураций observability-стека для развёртывания мониторинга и трассировки |
 
-Host backend авторизуется в платформе по `realmCode + clientId + clientSecret`, получает host service token и вызывает launch endpoint.
-Платформа проверяет realm, client, miniapp, role mapping и access policy, затем выдает короткоживущий одноразовый launch ticket.
-В URL miniapp уходит только ticket. Miniapp обменивает ticket на свою miniapp-сессию через SSO exchange и получает собственные access/refresh tokens.
+```mermaid
+flowchart LR
+    Admin["Администратор"] --> FE["frontend (React Admin UI)"]
+    FE -->|Admin JWT /api/admin/**| Core["core (Spring Boot Platform)"]
 
-В итоге подключение внешнего приложения происходит 1 раз, а количество добавлений miniapp - неограничено.
+    User["Пользователь"] --> BankUI["kemaless-bank UI"]
+    BankUI -->|1. Запрос запуска miniapp| BankAPI["kemaless-bank Backend + miniapp-sdk"]
+    BankAPI -->|2. B2B Auth, Catalog, Launch, Logout, Introspect| Core
 
-## Требования
+    BankUI -->|3. iframe src = entryUrl?ticket=...| MiniAppUI["payment-miniapp SPA"]
+    MiniAppUI -->|4. POST /api/session/exchange| MiniAppBFF["payment-miniapp Backend"]
+    MiniAppBFF -->|5. POST /api/realms/{realm}/sso/exchange| Core
+    MiniAppUI -->|6. API с MiniApp Bearer JWT| MiniAppBFF
+    MiniAppBFF -->|7. Host API с MiniApp JWT| BankAPI
 
-- Java 21
-- Docker с Docker Compose
-- Maven wrapper используется из репозитория: `mvnw` / `mvnw.cmd`
-
-## Запуск miniApp platform 
-
-### 0. Клонировать репозиторий 
-
-```bash
-git clone https://github.com/kemalthes/miniapp-platfrom.git
+    Core --> PG["PostgreSQL 16 + pgvector"]
+    Core --> MinIO["MinIO (Media S3)"]
+    Core -.->|Optional LLM API| LLM["OpenAI-compatible API"]
 ```
 
-### 1. Подготовить `.env`
+## Интеграция host-приложения
 
-Минимально важные переменные:
+### 1. Подготовка Realm и политик в платформе
 
-```env
-PLATFORM_ADMIN_USERNAME=admin
-PLATFORM_ADMIN_PASSWORD=strong-password
-PLATFORM_BACKEND_SECRET_KEY=very-long-secret-key-with-at-least-32-chars
+1. Войдите в админ-панель (`frontend`) под учётной записью `ROOT` (создаётся при первом старте `core` из `PLATFORM_ADMIN_USERNAME` и `PLATFORM_ADMIN_PASSWORD`).
+2. Создайте `Realm` (например, `bank`). При создании автоматически генерируется клиент по умолчанию (`clientId`, `clientSecret` показывается один раз).
+3. Создайте роли realm (`RealmRole`, например `USER`, `PREMIUM_CLIENT`) и настройте соответствие внешних ролей host-приложения (`ExternalRoleMapping`: например, `CARD_OWNER -> USER`).
+4. Зарегистрируйте `MiniApp` в глобальном каталоге, подключите его к `Realm` (`RealmMiniApp`), задайте `entryUrl` (например, `http://localhost:8091/start`), `AccessPolicy` и переведите статус в `PUBLISHED`.
 
-POSTGRES_DATABASE=platform_db
-POSTGRES_USERNAME=postgres
-POSTGRES_PASSWORD=postgres
-POSTGRES_PORT=15432
-```
+Пример политики доступа:
 
-При первом старте miniApp platform создаст root-пользователя из env. При повторном запуске пароль и роли root-пользователя не перетираются.
-
-### 2. Собрать backend jar
-
-```bash
-cd core
-./mvnw clean package -DskipTests
-cd ..
-```
-
-### 3. Запустить платформу через Docker Compose
-
-```bash
-docker compose up --build
-```
-
-По текущему `docker-compose.yml` сервис доступен на:
-
-```text
-http://localhost:8080
-```
-
-Admin UI и API находятся на одном host:
-
-```text
-Admin UI: http://localhost:8080
-API:      http://localhost:8080/api
-```
-
-Данные для первого входа (если не переопределяли):
-
-```text
-username: admin
-password: strong-password
-```
-
-## Настройка Realm и MiniApp в платформе
-
-Перед использованием SDK нужно один раз подготовить данные в admin panel:
-
-1. Войти в admin panel под root.
-2. Создать `Realm`, например `bank`.
-3. Сохранить выданные `clientId` и `clientSecret`.
-4. Создать realm roles, например `USER`, `PREMIUM_CLIENT`, `VIP`.
-5. Настроить role mappings:
-
-```text
-External host role -> Realm role
-MB_PREMIUM         -> PREMIUM_CLIENT
-CARD_OWNER         -> USER
-BANK_VIP_2025      -> VIP
-```
-
-6. Создать или подключить MiniApp к Realm.
-7. Указать `entryUrl` miniapp, например:
-
-```text
-http://localhost:8091
-```
-
-8. Настроить access policy:
-
-Пример в формате JSON:
 ```json
 {
   "accessType": "ROLE_BASED",
   "roleMatchMode": "ANY",
-  "requiredRoles": ["PREMIUM_CLIENT", "VIP"]
+  "requiredRoles": ["USER", "PREMIUM_CLIENT"]
 }
 ```
 
-9. Опубликовать MiniApp.
+### 2. Установка и настройка `miniapp-sdk`
 
-Важно: host-приложение отправляет свои external roles. Платформа сама маппит их в realm roles. Незамапленные роли не дают доступ.
-
-## Установка miniapp-sdk
-
-SDK пока используется как локальный Maven artifact.
-
-PowerShell:
-
-```powershell
-cd miniapp-sdk
-.\mvnw.cmd clean install -DskipTests
-cd ..
-```
-
-Bash:
+Установите `miniapp-sdk` в локальный Maven-репозиторий:
 
 ```bash
 cd miniapp-sdk
-./mvnw clean install -DskipTests
-cd ..
+./mvnw clean install
 ```
 
-После этого SDK можно подключить в Spring Boot backend host-приложения:
+Добавьте зависимость в `pom.xml` backend-сервиса host-приложения:
 
 ```xml
 <dependency>
@@ -159,110 +83,158 @@ cd ..
 </dependency>
 ```
 
-## Конфигурация SDK
-
-SDK использует Spring Boot auto-configuration и создает bean `MiniAppPlatformClient`, если включена настройка `miniapp.platform.enabled`.
-
-Пример `application.yaml` в host backend:
+Настройте параметры подключения в `application.yaml` host-приложения:
 
 ```yaml
 miniapp:
   platform:
     enabled: true
-    url: http://localhost:8080
+    url: http://localhost:8082
     realm-code: bank
     client-id: default-bank
-    client-secret: raw-secret-shown-once
+    client-secret: ${MINIAPP_CLIENT_SECRET}
     connect-timeout: PT5S
     read-timeout: PT30S
 ```
 
-## Использование SDK
+`MiniappAutoConfiguration` зарегистрирует bean `MiniAppPlatformClient` с методами:
 
-### Получить каталог опубликованных miniapp
+- `getCatalog()` — получить список опубликованных miniapp для realm (с кешированием host-токена и безопасными retry при временных 408/429/502/503/504);
+- `launchMiniApp(miniAppCode, request)` — проверить политику доступа и получить `LaunchResult` (`launchUrl` с `ticket`, `realmCode`, `miniAppCode` и `ticketExpiresIn`);
+- `introspectToken(token)` — проверить активность `MiniAppJwt` и получить `externalUserId`, `miniAppCode`, `realmRoles`;
+- `logoutUser(externalUserId)` — отозвать все активные miniapp-сессии пользователя в realm.
 
-```java
-@Service
-public class HostMiniAppService {
+## Последовательность SSO-аутентификации
 
-    private final MiniAppPlatformClient platformClient;
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as "Пользователь"
+    participant HUI as "Host Frontend"
+    participant HBE as "Host Backend (miniapp-sdk)"
+    participant Core as "Core Platform"
+    participant MUI as "MiniApp SPA (iframe)"
+    participant MBE as "MiniApp Backend"
 
-    public HostMiniAppService(MiniAppPlatformClient platformClient) {
-        this.platformClient = platformClient;
-    }
+    U->>HUI: Открывает miniapp
+    HUI->>HBE: POST запуск miniapp (User JWT)
+    HBE->>Core: POST /api/realms/{realm}/auth/token (clientId, clientSecret)
+    Core-->>HBE: HostServiceJwt (Bearer)
+    HBE->>Core: POST /api/realms/{realm}/miniapps/{code}/launch (UserContext, roles)
+    Core->>Core: Маппинг ролей, проверка AccessPolicy, сохранение hash(ticket)
+    Core-->>HBE: launchUrl?ticket=... + ticketExpiresIn
+    HBE-->>HUI: launchUrl (+ realmCode, miniAppCode от SDK)
+    HUI->>MUI: Загрузка iframe по launchUrl
 
-    public List<MiniAppInfo> catalog() {
-        return platformClient.getCatalog();
-    }
-}
+    MUI->>MBE: POST /api/session/exchange (ticket, realmCode, miniAppCode)
+    MBE->>Core: POST /api/realms/{realm}/sso/exchange (ticket, miniAppCode)
+    Core->>Core: Pessimistic lock по hash(ticket), проверка TTL/usedAt, создание MiniAppSession
+    Core-->>MBE: MiniAppJwt (accessToken), refreshToken, user, context
+    MBE-->>MUI: Данные сессии (accessToken хранится в памяти SPA)
+
+    MUI->>MBE: Запрос к API с Authorization Bearer MiniAppJwt
+    MBE->>HBE: Вызов Host API с тем же Bearer MiniAppJwt
+    HBE->>Core: POST /api/realms/{realm}/auth/introspect (token)
+    Core-->>HBE: active=true, externalUserId, miniAppCode, realmRoles
+    HBE-->>MBE: Бизнес-данные ответа
+    MBE-->>MUI: Результат операции
+
+    U->>HUI: Logout из host-приложения
+    HUI->>HBE: POST logout
+    HBE->>Core: POST /api/realms/{realm}/sessions/logout (externalUserId)
+    Core-->>HBE: revokedSessions
 ```
 
-### Запустить miniapp для пользователя
+## Подключение нового MiniApp
 
-```java
-    public String launchCreditCalculator() {
-        UserContext user = UserContext.builder()
-                .externalUserId("user-123")
-                .email("user@mail.com")
-                .roles(List.of("MB_PREMIUM", "CARD_OWNER"))
-                .attributes(Map.of(
-                        "segment", "premium",
-                        "city", "Kazan"
-                ))
-                .build();
-        MiniAppLaunchRequest request = MiniAppLaunchRequest.builder()
-                .user(user)
-                .device(DeviceContext.builder()
-                        .platform("web")
-                        .deviceId("browser-session-1")
-                        .build())
-                .context(Map.of(
-                        "theme", "dark",
-                        "locale", "ru"
-                ))
-                .build();
-        LaunchResult result = platformClient.launchMiniApp("credit-calculator", request);
-        return result.getLaunchUrl();
-    }
+Чтобы miniapp безопасно работал с платформой и мог встраиваться в host-приложение:
+
+1. **Точка входа и обмен тикета**: на маршруте запуска (`/start` или `/`) SPA извлекает `ticket`, `realmCode`, `miniAppCode` из query-параметров и отправляет их на свой backend (`POST /api/session/exchange`). Обмен тикета должен выполняться server-to-server через `POST /api/realms/{realmCode}/sso/exchange` в `core`.
+2. **Хранение токенов**: не передавайте `accessToken`/`refreshToken` в URL и не сохраняйте их в `localStorage` без необходимости; в `payment-miniapp` `accessToken` хранится только в оперативной памяти страницы.
+3. **Встраивание в `<iframe>`**: настройте заголовок `Content-Security-Policy: frame-ancestors 'self' <host-ui-origin>` и CORS для разрешённых origin host-приложения (`miniapp.web-security.*` в `payment-miniapp`).
+4. **Диагностика и метаданные**: `payment-miniapp` предоставляет `/api/health` и манифест контракта `/api/miniapp/manifest` (`/.well-known/miniapp.json`).
+5. **Ограничение доступа на стороне Host API**: при приёме `MiniAppJwt` через introspection обязательно проверяйте `introspection.isActive()` и допустимый `miniAppCode` (см. `bank.miniapp-api.allowed-codes` в `kemaless-bank`).
+
+## Локальный запуск
+
+### Требования
+
+- JDK 21
+- Docker и Docker Compose
+- Node.js 20+ и pnpm (или npm; для сборки/запуска `frontend` и UI `kemaless-bank` в репозитории зафиксирован `pnpm-lock.yaml`)
+- Встроенные Maven Wrapper (`./mvnw` / `mvnw.cmd`) в каждом Java-модуле
+
+### 1. Запуск базовой инфраструктуры и `core`
+
+1. Подготовьте корневой `.env` на основе шаблона:
+
+```bash
+cp .env.sample .env
 ```
 
-В URL находится только одноразовый ticket. Access token и refresh token туда не передаются.
+> Внимание: при использовании `.env` порт `core` на хосте задаётся через `SERVER_PORT=8082` (чтобы не конфликтовать с `kemaless-bank` на `8080`). Без `.env` `docker-compose.yml` публикует `core` на `8080`. Перед любым внешним деплоем замените демонстрационные пароли и `PLATFORM_BACKEND_SECRET_KEY` (минимум 32 байта).
 
-### Logout пользователя из host-приложения
+2. Соберите `miniapp-sdk` и JAR для `core`:
 
-При logout host-приложение должно отозвать все miniapp-сессии пользователя в Realm:
-
-```java
-public void logout(String externalUserId) {
-    platformClient.logoutUser(externalUserId);
-}
+```bash
+cd miniapp-sdk && ./mvnw clean install -DskipTests && cd ..
+cd core && ./mvnw clean package -DskipTests && cd ..
 ```
 
-### Introspection miniapp token
+3. Поднимите `core`, PostgreSQL (`pgvector/pgvector:pg16`) и MinIO:
 
-Если host backend или miniapp backend хочет проверить miniapp access token через платформу:
-
-``` java
-var result = platformClient.introspectToken(token);
-
-if (!result.isActive()) {
-    throw new IllegalStateException("MiniApp token is inactive");
-}
+```bash
+docker compose up --build -d
 ```
 
-## Observability
+Или воспользуйтесь `Makefile`:
+- `make build` — сборка Java-модулей (`miniapp-sdk`, `core`, `payment-miniapp`, `kemaless-bank`);
+- `make up` / `make down` / `make logs` / `make ps` — управление базовым `docker-compose.yml`.
 
-Также возникает задача отслеживать и мониторить miniapp.
-Поэтому добавлен observability слой: технические логи, audit events и метрики.
-А также — AI Assistant для анализа логов, метрик и audit events.
-Его задача — помочь администраторам и разработчикам быстрее понимать, почему произошла ошибка.
-Мы рассматриваем его как RAG-систему, ассистент может объяснить проблему простым языком.
+Доступные адреса после старта `docker compose`:
+- Core API: `http://localhost:8082` (или `8080`, если `SERVER_PORT` не задан)
+- PostgreSQL (`pgvector`): `localhost:15432` (`POSTGRES_PORT`)
+- MinIO API / Console: `http://localhost:9000` / `http://localhost:9002`
 
-В итоге:
-Для администратора — это единая панель управления miniapp, ролями, публикацией и статистикой.
+### 2. Запуск панели администратора (`frontend`)
 
-Для разработчика host-приложения — это одна интеграция через SDK вместо интеграции с каждым miniapp.
+```bash
+cd frontend
+cp .env.sample .env
+pnpm install --frozen-lockfile
+pnpm run dev
+```
 
-Для пользователя — это бесшовный запуск miniapp без повторного логина.
+По умолчанию `frontend/.env.sample` указывает `VITE_API_BASE_URL=http://localhost:8082`. Для входа используйте учётные данные из `PLATFORM_ADMIN_USERNAME` и `PLATFORM_ADMIN_PASSWORD`.
 
-А для эксплуатации — это аудит, метрики, логи и AI Assistant для быстрого анализа ошибок.
+### 3. Запуск сквозного демо-стенда (`kemaless-bank` + `payment-miniapp`)
+
+1. Запустите БД банка (или используйте существующий PostgreSQL с отдельной базой):
+
+```bash
+docker compose -f kemaless-bank/docker-compose.yaml up -d
+```
+
+2. Сконфигурируйте в админ-панели `core` realm (например, `bank`), сохраните `clientId`/`clientSecret`, создайте роль и маппинг, подключите и опубликуйте miniapp с `entryUrl=http://localhost:8091/start`.
+3. Задайте в окружении параметры `MINIAPP_*`, `PLATFORM_BASE_URL`, `BANK_*` (ориентир — `.env.sample`) и запустите:
+   - `kemaless-bank` backend (порт `8080`) и `kemaless-bank/frontend` (`http://localhost:5174`);
+   - `payment-miniapp` (порт `8091`).
+
+### 4. Проверка тестов без Docker
+
+```bash
+cd core && ./mvnw test
+cd ../miniapp-sdk && ./mvnw test
+cd ../payment-miniapp && ./mvnw test
+```
+
+## Известные ограничения
+
+- **Состав `docker-compose.yml`**: в текущем Compose-файле описаны `admin-platform` (`core`), `postgres` (`pgvector/pgvector:pg16`) и S3-совместимое хранилище (`pgsty/silo:RELEASE.2026-11-12T00-00-00Z`, pinned multi-arch замена удалённого `minio/minio:latest`; альтернативы — `bitnamilegacy/minio:2025.7.23-debian-12-r5` или `rustfs/rustfs:1.0.7` с адаптацией конфигурации; также медиа-модуль можно отключить через `PLATFORM_AI_MEDIA_ENABLED=false`). `frontend`, `payment-miniapp`, `kemaless-bank` и стек мониторинга запускаются отдельно.
+- **Observability-конфиги в `gitops/observability/`**: директория содержит заготовки для Prometheus, Alertmanager, Grafana, Loki, Tempo, OTel Collector и Alloy, не подключённые в `docker-compose.yml`; часть правил и дашбордов сохранила шаблонное именование (`delivery-monolith`) и требует адаптации перед production-использованием.
+- **Незавершённый endpoint телеметрии в `miniapp-sdk`**: метод `MiniAppPlatformClient.trackEvent(...)` обращается к `POST /api/realms/{realmCode}/miniapps/{miniAppCode}/events`, который не реализован в `core`.
+- **Аутентификация introspection endpoint**: `POST /api/realms/{realmCode}/auth/introspect` в текущей версии публично доступен в `SecurityConfig` в соответствии с контрактом `miniapp-sdk`; в production этот endpoint должен быть ограничен по сети или требовать аутентификацию клиента realm.
+- **Обязательность `externalUserId` для `launch_tickets`**: в схеме БД `launch_tickets.external_user_id` задано `NOT NULL`, поэтому при запуске miniapp с политикой `PUBLIC_IN_REALM` host-приложению необходимо передавать идентификатор субъекта/анонимной сессии.
+- **Начальные mock-данные во `frontend`**: часть Zustand-сторов и страница предпросмотра `LaunchPage` содержат статические mock-массивы, используемые до загрузки реальных данных с backend или для демонстрационного превью.
+- **Опциональный AI Copilot / RAG**: для работы чата и индексации в `pgvector` требуется внешний OpenAI-compatible endpoint и ключ (`SPRING_AI_OPENAI_SDK_API_KEY`), а также включение `PLATFORM_AI_COPILOT_ENABLED=true` и `PLATFORM_AI_RAG_ENABLED=true`.
+- **Лицензия**: файл `LICENSE` отсутствует, так как исходный проект разрабатывался командой без опубликованной open-source лицензии.

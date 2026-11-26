@@ -10,6 +10,7 @@ import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -97,6 +98,12 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorDto> handleServiceException(ServiceException e, HttpServletRequest request) {
         log.warn("Business logic exception: {} (Status: {})", e.getMessage(), e.getStatus());
         return buildResponse(e.getErrorCode(), e.getMessage(), HttpStatus.valueOf(e.getStatus()), request);
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ErrorDto> handleAccessDeniedException(AccessDeniedException e, HttpServletRequest request) {
+        log.warn("Access denied for {}: {}", request.getRequestURI(), e.getMessage());
+        return buildResponse("AccessDenied", "Access denied", HttpStatus.FORBIDDEN, request);
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

@@ -33,7 +33,7 @@ public class RealmClientJwtAuthenticationFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        String path = request.getServletPath();
+        String path = resolvePath(request);
         return !path.matches(LAUNCH_ENDPOINT_PATTERN)
                 && !path.matches(SESSION_LOGOUT_ENDPOINT_PATTERN)
                 && !path.matches(CATALOG_ENDPOINT_PATTERN);
@@ -70,12 +70,25 @@ public class RealmClientJwtAuthenticationFilter extends OncePerRequestFilter {
     }
 
     private String extractRealmCode(HttpServletRequest request) {
-        String path = request.getServletPath();
+        String path = resolvePath(request);
         int start = REALM_PATH_PREFIX.length();
         int end = path.indexOf('/', start);
         if (end < 0) {
             throw new IllegalArgumentException("Realm code is missing");
         }
         return path.substring(start, end);
+    }
+
+    private static String resolvePath(HttpServletRequest request) {
+        String servletPath = request.getServletPath();
+        if (servletPath != null && !servletPath.isEmpty()) {
+            return servletPath;
+        }
+        String uri = request.getRequestURI();
+        String contextPath = request.getContextPath();
+        if (contextPath != null && !contextPath.isEmpty() && uri.startsWith(contextPath)) {
+            return uri.substring(contextPath.length());
+        }
+        return uri;
     }
 }

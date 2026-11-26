@@ -1,0 +1,19 @@
+spring:
+  main:
+    banner-mode: off
+
+platform:
+  auth:
+    bootstrap-enabled: false
+    backend-secret-key: test-platform-secret-key-with-at-least-32-characters
+    access-token-ttl-seconds: 900
+    refresh-token-ttl-seconds: 3600
+    launch-ticket-ttl-seconds: 60
+    miniapp-refresh-token-ttl-seconds: 3600
+  ai:
+    copilot:
+      enabled: false
+    rag:
+      enabled: false
+    media:
+      enabled: false

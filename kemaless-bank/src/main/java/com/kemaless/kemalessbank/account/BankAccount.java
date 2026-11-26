@@ -12,6 +12,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import lombok.AccessLevel;
@@ -50,6 +51,10 @@ public class BankAccount {
 
     @Column(nullable = false)
     private OffsetDateTime createdAt;
+
+    @Version
+    @Column(nullable = false)
+    private Long version;
 
     public BankAccount(BankUser user, String accountNumber, String title, String currency, BigDecimal balance) {
         this.user = user;

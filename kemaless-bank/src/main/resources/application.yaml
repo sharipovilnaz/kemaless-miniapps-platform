@@ -46,13 +46,7 @@ bank:
     refresh-token-ttl: ${BANK_REFRESH_TOKEN_TTL:P14D}
   public-ui-url: ${BANK_PUBLIC_UI_URL:http://localhost:5173}
   cors:
-    allowed-origin-patterns:
-      - "http://localhost:*"
-      - "http://127.0.0.1:*"
-      - "http://[::1]:*"
-      - "http://192.168.*.*:*"
-      - "http://10.*.*.*:*"
-      - "http://172.*.*.*:*"
+    allowed-origin-patterns: ${BANK_CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:*,http://127.0.0.1:*,http://[::1]:*}
   csp:
     frame-src: ${BANK_CSP_FRAME_SRC:'self'}
   miniapp-api:

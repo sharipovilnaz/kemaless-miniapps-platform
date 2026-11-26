@@ -5,37 +5,39 @@ services:
       dockerfile: Dockerfile
       args:
         JAR_FILE: target/core-0.0.1-SNAPSHOT.jar
-    container_name: admdocplatformin-service
+    container_name: miniapp-platform-core
     ports:
       - "${SERVER_PORT:-8080}:8080"
     environment:
-      - PLATFORM_ADMIN_USERNAME=admin
-      - PLATFORM_ADMIN_PASSWORD=strong-password
-      - PLATFORM_BACKEND_SECRET_KEY=${PLATFORM_BACKEND_SECRET_KEY:-very-long-secret-key-with-at-least-32-chars}
+      - PLATFORM_ADMIN_USERNAME=${PLATFORM_ADMIN_USERNAME:-admin}
+      - PLATFORM_ADMIN_PASSWORD=${PLATFORM_ADMIN_PASSWORD:-change-me-admin-password}
+      - PLATFORM_BACKEND_SECRET_KEY=${PLATFORM_BACKEND_SECRET_KEY:-change-me-platform-secret-key-at-least-32-chars}
       - POSTGRES_HOST=postgres
-      - PLATFORM_AI_COPILOT_ENABLED=${PLATFORM_AI_COPILOT_ENABLED}
-      - PLATFORM_AI_RAG_ENABLED=${PLATFORM_AI_RAG_ENABLED}
-      - PLATFORM_AI_RAG_TOP_K=${PLATFORM_AI_RAG_TOP_K}
-      - PLATFORM_AI_RAG_SIMILARITY_THRESHOLD=${PLATFORM_AI_RAG_SIMILARITY_THRESHOLD}
-      - PLATFORM_AI_RAG_BOOTSTRAP_MINIAPPS_ON_STARTUP=${PLATFORM_AI_RAG_BOOTSTRAP_MINIAPPS_ON_STARTUP}
-      - PLATFORM_AI_MEDIA_ENABLED=${PLATFORM_AI_MEDIA_ENABLED}
-      - PLATFORM_AI_MEDIA_MINIO_ENDPOINT=${PLATFORM_AI_MEDIA_MINIO_ENDPOINT}
-      - PLATFORM_AI_MEDIA_MINIO_PUBLIC_BASE_URL=${PLATFORM_AI_MEDIA_MINIO_PUBLIC_BASE_URL}
-      - PLATFORM_AI_MEDIA_MINIO_ACCESS_KEY=${PLATFORM_AI_MEDIA_MINIO_ACCESS_KEY}
-      - PLATFORM_AI_MEDIA_MINIO_SECRET_KEY=${PLATFORM_AI_MEDIA_MINIO_SECRET_KEY}
-      - PLATFORM_AI_MEDIA_MINIO_BUCKET=${PLATFORM_AI_MEDIA_MINIO_BUCKET}
-      - PLATFORM_AI_MEDIA_BOOTSTRAP_BUCKET_ON_STARTUP=${PLATFORM_AI_MEDIA_BOOTSTRAP_BUCKET_ON_STARTUP}
-      - SPRING_AI_OPENAI_SDK_BASE_URL=${SPRING_AI_OPENAI_SDK_BASE_URL}
-      - SPRING_AI_OPENAI_SDK_CHAT_MODEL=${SPRING_AI_OPENAI_SDK_CHAT_MODEL}
       - POSTGRES_PORT=5432
       - POSTGRES_DATABASE=${POSTGRES_DATABASE:-platform_db}
-      - POSTGRES_USERNAME=postgres
-      - POSTGRES_PASSWORD=postgres
-      - SPRING_AI_OPENAI_SDK_API_KEY=${SPRING_AI_OPENAI_SDK_API_KEY}
+      - POSTGRES_USERNAME=${POSTGRES_USERNAME:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - PLATFORM_AI_COPILOT_ENABLED=${PLATFORM_AI_COPILOT_ENABLED:-false}
+      - PLATFORM_AI_RAG_ENABLED=${PLATFORM_AI_RAG_ENABLED:-false}
+      - PLATFORM_AI_RAG_TOP_K=${PLATFORM_AI_RAG_TOP_K:-5}
+      - PLATFORM_AI_RAG_SIMILARITY_THRESHOLD=${PLATFORM_AI_RAG_SIMILARITY_THRESHOLD:-0.65}
+      - PLATFORM_AI_RAG_BOOTSTRAP_MINIAPPS_ON_STARTUP=${PLATFORM_AI_RAG_BOOTSTRAP_MINIAPPS_ON_STARTUP:-true}
+      - PLATFORM_AI_MEDIA_ENABLED=${PLATFORM_AI_MEDIA_ENABLED:-false}
+      - PLATFORM_AI_MEDIA_MINIO_ENDPOINT=http://minio:9000
+      - PLATFORM_AI_MEDIA_MINIO_PUBLIC_BASE_URL=${PLATFORM_AI_MEDIA_MINIO_PUBLIC_BASE_URL:-http://localhost:9000}
+      - PLATFORM_AI_MEDIA_MINIO_ACCESS_KEY=${PLATFORM_AI_MEDIA_MINIO_ACCESS_KEY:-minioadmin}
+      - PLATFORM_AI_MEDIA_MINIO_SECRET_KEY=${PLATFORM_AI_MEDIA_MINIO_SECRET_KEY:-minioadmin}
+      - PLATFORM_AI_MEDIA_MINIO_BUCKET=${PLATFORM_AI_MEDIA_MINIO_BUCKET:-ai-media-bucket}
+      - PLATFORM_AI_MEDIA_BOOTSTRAP_BUCKET_ON_STARTUP=${PLATFORM_AI_MEDIA_BOOTSTRAP_BUCKET_ON_STARTUP:-true}
+      - SPRING_AI_OPENAI_SDK_BASE_URL=${SPRING_AI_OPENAI_SDK_BASE_URL:-}
+      - SPRING_AI_OPENAI_SDK_CHAT_MODEL=${SPRING_AI_OPENAI_SDK_CHAT_MODEL:-gpt-4o-mini}
+      - SPRING_AI_OPENAI_SDK_API_KEY=${SPRING_AI_OPENAI_SDK_API_KEY:-}
       - "CORS_ALLOWED_ORIGIN_PATTERNS=${CORS_ALLOWED_ORIGIN_PATTERNS:-http://localhost:*,http://127.0.0.1:*,https://localhost:*}"
     depends_on:
-      - postgres
-      - minio
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     networks:
       - miniapp-net
 
@@ -44,14 +46,14 @@ services:
     container_name: miniapp-postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DATABASE:-platform_db}
-      POSTGRES_USER: ${DB_USERNAME:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_USER: ${POSTGRES_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_PORT:-15432}:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}" ]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -60,25 +62,24 @@ services:
     restart: unless-stopped
 
   minio:
-    image: minio/minio:latest
-    container_name: delivery-minio
+    image: pgsty/silo:RELEASE.2026-11-12T00-00-00Z
+    container_name: miniapp-minio
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${PLATFORM_AI_MEDIA_MINIO_ACCESS_KEY:-admin}
-      MINIO_ROOT_PASSWORD: ${PLATFORM_AI_MEDIA_MINIO_SECRET_KEY:-admin123}
+      MINIO_ROOT_USER: ${PLATFORM_AI_MEDIA_MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${PLATFORM_AI_MEDIA_MINIO_SECRET_KEY:-minioadmin}
     ports:
       - "${MINIO_PORT:-9000}:9000"
       - "${MINIO_SERVER_PORT:-9002}:9001"
     volumes:
       - minio_data:/data
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:${MINIO_PORT:-9000}/minio/health/live" ]
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 30s
       timeout: 20s
       retries: 3
     networks:
       - miniapp-net
-
 
 volumes:
   pg_data:
