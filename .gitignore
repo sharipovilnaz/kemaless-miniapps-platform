@@ -3,6 +3,12 @@
 
 ### dotenv ###
 .env
+.env.*
+!.env.sample
+!.env.example
+
+### Agent local documentation ###
+/.local-docs/
 
 ### Intellij+all ###
 # Covers JetBrains IDEs: IntelliJ, RubyMine, PhpStorm, AppCode, PyCharm, CLion, Android Studio, WebStorm and Rider
@@ -139,15 +145,21 @@ buildNumber.properties
 
 ### react ###
 .DS_*
+.DS_Store
 logs
 **/*.backup.*
 **/*.back.*
+*.swp
+*.swo
+*~
 
 node_modules
 bower_components
+.vite/
+dist/
+*.tsbuildinfo
 
 *.sublime*
-.env
 psd
 thumb
 sketch
