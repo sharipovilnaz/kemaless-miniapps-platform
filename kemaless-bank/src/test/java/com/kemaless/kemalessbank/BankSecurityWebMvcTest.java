@@ -81,6 +81,9 @@ class BankSecurityWebMvcTest {
     @Autowired
     private JwtService jwtService;
 
+    @Autowired
+    private JwtAuthenticationFilter jwtAuthenticationFilter;
+
     @MockitoBean
     private MiniAppPlatformClient miniAppPlatformClient;
 
@@ -206,6 +209,90 @@ class BankSecurityWebMvcTest {
                         .build());
         mockMvc.perform(get("/api/accounts").header("Authorization", "Bearer wrong-type"))
                 .andExpect(status().isUnauthorized());
+
+        when(miniAppPlatformClient.introspectToken("missing-type"))
+                .thenReturn(TokenIntrospectionResult.builder()
+                        .active(true)
+                        .type(null)
+                        .miniAppCode("payment-service")
+                        .externalUserId("alice")
+                        .build());
+        mockMvc.perform(get("/api/accounts").header("Authorization", "Bearer missing-type"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(post("/api/transfers/peer")
+                        .header("Authorization", "Bearer missing-type")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"fromAccountId\":1,\"recipient\":\"bob\",\"amount\":10.00}"))
+                .andExpect(status().isUnauthorized());
+
+        when(miniAppPlatformClient.introspectToken("blank-type"))
+                .thenReturn(TokenIntrospectionResult.builder()
+                        .active(true)
+                        .type(" ")
+                        .miniAppCode("payment-service")
+                        .externalUserId("alice")
+                        .build());
+        mockMvc.perform(get("/api/users/me").header("Authorization", "Bearer blank-type"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void miniappTokenDoesNotReceiveUnverifiedScopesOrEscalateWithBankUserRealmRole() throws Exception {
+        BankUser alice = new BankUser(
+                "alice",
+                "hash",
+                "Alice",
+                "alice@example.com",
+                "+79001112233",
+                Set.of(new BankRole("USER", "User")));
+        when(userService.requireByUsername("alice")).thenReturn(alice);
+        when(accountRepository.sumActiveBalancesByCurrency(alice)).thenReturn(Map.of("RUB", new BigDecimal("100.00")));
+
+        when(miniAppPlatformClient.introspectToken("escalated-realm-role"))
+                .thenReturn(TokenIntrospectionResult.builder()
+                        .active(true)
+                        .type("MINIAPP_USER_TOKEN")
+                        .realmCode("bank")
+                        .miniAppCode("payment-service")
+                        .externalUserId("alice")
+                        .realmRoles(List.of("USER", "BANK_USER"))
+                        .expiresAt(Instant.now().plusSeconds(300))
+                        .build());
+
+        var filterRequest = new org.springframework.mock.web.MockHttpServletRequest("GET", "/api/users/me");
+        filterRequest.addHeader("Authorization", "Bearer escalated-realm-role");
+        var filterResponse = new org.springframework.mock.web.MockHttpServletResponse();
+        var capturedAuth = new java.util.concurrent.atomic.AtomicReference<
+                org.springframework.security.core.Authentication>();
+        try {
+            jwtAuthenticationFilter.doFilter(filterRequest, filterResponse, (req, res) -> capturedAuth.set(
+                    org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication()));
+        } finally {
+            org.springframework.security.core.context.SecurityContextHolder.clearContext();
+        }
+        assertThat(capturedAuth.get()).isNotNull();
+        assertThat(capturedAuth.get().getAuthorities())
+                .extracting(org.springframework.security.core.GrantedAuthority::getAuthority)
+                .containsExactlyInAnyOrder("ROLE_MINIAPP_CLIENT", "REALM_ROLE_USER", "REALM_ROLE_BANK_USER")
+                .noneMatch(a -> a.startsWith("SCOPE_") || "ROLE_BANK_USER".equals(a));
+
+        mockMvc.perform(get("/api/users/me").header("Authorization", "Bearer escalated-realm-role"))
+                .andExpect(status().isOk());
+
+        // Попытка подбросить realmRoles=["BANK_USER"] не должна открывать привилегированные банковские операции.
+        mockMvc.perform(post("/api/accounts")
+                        .header("Authorization", "Bearer escalated-realm-role")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"title\":\"Escalated\",\"currency\":\"RUB\"}"))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post("/api/transfers/internal")
+                        .header("Authorization", "Bearer escalated-realm-role")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"fromAccountId\":1,\"toAccountId\":2,\"amount\":10.00}"))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post("/api/miniapps/payment-service/launch")
+                        .header("Authorization", "Bearer escalated-realm-role"))
+                .andExpect(status().isForbidden());
     }
 
     @Test

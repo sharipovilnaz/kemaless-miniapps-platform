@@ -469,6 +469,186 @@ class KemalessBankApplicationTests {
         assertThat(forbiddenCreateAccount.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
     }
 
+    @Test
+    void miniappP2pTransferEnforcesOwnershipTypeAndRealm() {
+        String suffix = String.valueOf(Instant.now().toEpochMilli());
+        String alice = "p2palice" + suffix;
+        String bob = "p2pbob" + suffix;
+        String carol = "p2pcarol" + suffix;
+
+        Map<String, Object> aliceReg = post("/api/auth/register", Map.of(
+                "username", alice,
+                "password", "password123",
+                "fullName", "Alice P2P",
+                "email", alice + "@example.com",
+                "phone", "+7911" + suffix.substring(Math.max(0, suffix.length() - 7))));
+        Map<String, Object> bobReg = post("/api/auth/register", Map.of(
+                "username", bob,
+                "password", "password123",
+                "fullName", "Bob P2P",
+                "email", bob + "@example.com",
+                "phone", "+7922" + suffix.substring(Math.max(0, suffix.length() - 7))));
+        Map<String, Object> carolReg = post("/api/auth/register", Map.of(
+                "username", carol,
+                "password", "password123",
+                "fullName", "Carol P2P",
+                "email", carol + "@example.com",
+                "phone", "+7933" + suffix.substring(Math.max(0, suffix.length() - 7))));
+
+        Long aliceAccountId = ((Number) getList("/api/accounts", bearer((String) aliceReg.get("accessToken")))
+                .getFirst().get("id")).longValue();
+        Long bobAccountId = ((Number) getList("/api/accounts", bearer((String) bobReg.get("accessToken")))
+                .getFirst().get("id")).longValue();
+        String carolAccountNumber = (String) getList("/api/accounts", bearer((String) carolReg.get("accessToken")))
+                .getFirst().get("accountNumber");
+
+        BankAccount aliceAcc = accountRepository.findById(aliceAccountId).orElseThrow();
+        aliceAcc.credit(new BigDecimal("300.00"));
+        accountRepository.save(aliceAcc);
+        BankAccount bobAcc = accountRepository.findById(bobAccountId).orElseThrow();
+        bobAcc.credit(new BigDecimal("200.00"));
+        accountRepository.save(bobAcc);
+
+        PLATFORM.setDispatcher(new Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) {
+                if ("/api/realms/bank-mobile/auth/introspect".equals(request.getPath())) {
+                    String body = request.getBody().readUtf8();
+                    String json;
+                    if (body.contains("token-missing-type")) {
+                        json = """
+                                {"active":true,"realmCode":"bank-mobile","miniAppCode":"payment-service","externalUserId":"%s","realmRoles":["USER"]}
+                                """.formatted(alice);
+                    } else if (body.contains("token-wrong-realm")) {
+                        json = """
+                                {"active":true,"type":"MINIAPP_USER_TOKEN","realmCode":"foreign-realm","miniAppCode":"payment-service","externalUserId":"%s","realmRoles":["USER"]}
+                                """.formatted(alice);
+                    } else {
+                        json = """
+                                {"active":true,"type":"MINIAPP_USER_TOKEN","realmCode":"bank-mobile","miniAppCode":"payment-service","externalUserId":"%s","realmRoles":["USER"]}
+                                """.formatted(alice);
+                    }
+                    return new MockResponse().setHeader("Content-Type", "application/json").setBody(json);
+                }
+                return new MockResponse().setResponseCode(404);
+            }
+        });
+
+        ResponseEntity<String> missingType = rest.exchange(
+                "/api/transfers/peer",
+                HttpMethod.POST,
+                new HttpEntity<>(
+                        Map.of("fromAccountId", aliceAccountId, "recipient", bob, "amount", 50.00),
+                        bearer("token-missing-type")),
+                String.class);
+        assertThat(missingType.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+
+        ResponseEntity<String> wrongRealm = rest.exchange(
+                "/api/transfers/peer",
+                HttpMethod.POST,
+                new HttpEntity<>(
+                        Map.of("fromAccountId", aliceAccountId, "recipient", bob, "amount", 50.00),
+                        bearer("token-wrong-realm")),
+                String.class);
+        assertThat(wrongRealm.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+
+        HttpHeaders validMiniapp = bearer("token-valid-alice");
+        // Чужой fromAccountId при P2P через miniapp-токен отклоняется без изменения баланса жертвы.
+        ResponseEntity<String> foreignSource = rest.exchange(
+                "/api/transfers/peer",
+                HttpMethod.POST,
+                new HttpEntity<>(
+                        Map.of("fromAccountId", bobAccountId, "recipient", alice, "amount", 50.00),
+                        validMiniapp),
+                String.class);
+        assertThat(foreignSource.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(accountRepository.findById(bobAccountId).orElseThrow().getBalance())
+                .isEqualByComparingTo("200.00");
+
+        // Перевод на чужой toAccountNumber не проходит проверку владельца.
+        ResponseEntity<String> mismatchedTarget = rest.exchange(
+                "/api/transfers/peer",
+                HttpMethod.POST,
+                new HttpEntity<>(
+                        Map.of(
+                                "fromAccountId", aliceAccountId,
+                                "recipient", bob,
+                                "amount", 50.00,
+                                "toAccountNumber", carolAccountNumber),
+                        validMiniapp),
+                String.class);
+        assertThat(mismatchedTarget.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+
+        ResponseEntity<String> validPeer = rest.exchange(
+                "/api/transfers/peer",
+                HttpMethod.POST,
+                new HttpEntity<>(
+                        Map.of("fromAccountId", aliceAccountId, "recipient", bob, "amount", 50.00),
+                        validMiniapp),
+                String.class);
+        assertThat(validPeer.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(accountRepository.findById(aliceAccountId).orElseThrow().getBalance())
+                .isEqualByComparingTo("250.00");
+        assertThat(accountRepository.findById(bobAccountId).orElseThrow().getBalance())
+                .isEqualByComparingTo("250.00");
+    }
+
+    @Test
+    void liquibaseCleanInstallAndPrePrSchemaUpgradePreserveExistingData() throws Exception {
+        String adminUrl = POSTGRES.getJdbcUrl();
+        try (var adminConn = java.sql.DriverManager.getConnection(adminUrl, POSTGRES.getUsername(), POSTGRES.getPassword());
+             var stmt = adminConn.createStatement()) {
+            stmt.execute("CREATE DATABASE liquibase_clean_test");
+            stmt.execute("CREATE DATABASE liquibase_upgrade_test");
+        }
+
+        String cleanUrl = "jdbc:postgresql://%s:%d/liquibase_clean_test"
+                .formatted(POSTGRES.getHost(), POSTGRES.getFirstMappedPort());
+        runLiquibaseUpdate(cleanUrl, "db/changelog/db.changelog-master.yaml");
+
+        String upgradeUrl = "jdbc:postgresql://%s:%d/liquibase_upgrade_test"
+                .formatted(POSTGRES.getHost(), POSTGRES.getFirstMappedPort());
+        runLiquibaseUpdate(upgradeUrl, "db/base-initial-schema.yaml");
+        try (var conn = java.sql.DriverManager.getConnection(upgradeUrl, POSTGRES.getUsername(), POSTGRES.getPassword());
+             var stmt = conn.createStatement()) {
+            var versionBefore = conn.getMetaData().getColumns(null, "public", "bank_account", "version");
+            assertThat(versionBefore.next()).isFalse();
+
+            stmt.executeUpdate("""
+                    INSERT INTO bank_user (username, password_hash, full_name, created_at, updated_at)
+                    VALUES ('legacy_user', 'hash', 'Legacy User', NOW(), NOW())
+                    """);
+            stmt.executeUpdate("""
+                    INSERT INTO bank_account (user_id, account_number, title, currency, balance, status, created_at)
+                    VALUES ((SELECT id FROM bank_user WHERE username = 'legacy_user'), 'KML-LEGACY-1', 'Legacy', 'RUB', 420.50, 'ACTIVE', NOW())
+                    """);
+        }
+
+        runLiquibaseUpdate(upgradeUrl, "db/changelog/db.changelog-master.yaml");
+        runLiquibaseUpdate(upgradeUrl, "db/changelog/db.changelog-master.yaml");
+
+        try (var conn = java.sql.DriverManager.getConnection(upgradeUrl, POSTGRES.getUsername(), POSTGRES.getPassword());
+             var stmt = conn.createStatement();
+             var rs = stmt.executeQuery("SELECT version, balance FROM bank_account WHERE account_number = 'KML-LEGACY-1'")) {
+            assertThat(rs.next()).isTrue();
+            assertThat(rs.getLong("version")).isZero();
+            assertThat(rs.getBigDecimal("balance")).isEqualByComparingTo("420.50");
+        }
+    }
+
+    private static void runLiquibaseUpdate(String jdbcUrl, String changelogPath) throws Exception {
+        try (var conn = java.sql.DriverManager.getConnection(jdbcUrl, POSTGRES.getUsername(), POSTGRES.getPassword())) {
+            var database = liquibase.database.DatabaseFactory.getInstance()
+                    .findCorrectDatabaseImplementation(new liquibase.database.jvm.JdbcConnection(conn));
+            try (var liquibase = new liquibase.Liquibase(
+                    changelogPath,
+                    new liquibase.resource.ClassLoaderResourceAccessor(),
+                    database)) {
+                liquibase.update(new liquibase.Contexts(), new liquibase.LabelExpression());
+            }
+        }
+    }
+
     private Map<String, Object> post(String path, Object body) {
         return post(path, body, new HttpHeaders());
     }
