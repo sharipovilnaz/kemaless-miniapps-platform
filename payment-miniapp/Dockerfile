@@ -2,13 +2,18 @@ FROM eclipse-temurin:21-jdk-jammy AS builder
 
 WORKDIR /build
 
-ARG JAR_FILE
+ARG JAR_FILE=target/payment-miniapp-0.0.1-SNAPSHOT.jar
 COPY ${JAR_FILE} app.jar
 RUN java -Djarmode=layertools -jar app.jar extract
 
-FROM kemaless/miniapp-base-image:1.0
+FROM eclipse-temurin:21-jre-jammy
+
+RUN addgroup --system spring && adduser --system --ingroup spring spring
 
 WORKDIR /app
+RUN chown spring:spring /app
+
+USER spring:spring
 
 COPY --from=builder /build/dependencies/ .
 COPY --from=builder /build/spring-boot-loader/ .

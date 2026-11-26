@@ -10,37 +10,40 @@ NC=\033[0m
 default: help
 
 all: build up
-	@echo "${GREEN}✅ Платформа успешно развернута и запущена!${NC}"
-	@echo "${GREEN}📊 Grafana: http://localhost:3323 (admin/admin)${NC}"
+	@echo "${GREEN}Базовая инфраструктура платформы (core, postgres, minio) запущена.${NC}"
+	@echo "${GREEN}Core API: http://localhost:$${SERVER_PORT:-8080}${NC}"
 
 build:
-	@echo "${YELLOW}⏳ Собираем Java приложения...${NC}"
+	@echo "${YELLOW}Собираем Java-модули...${NC}"
+	cd miniapp-sdk && $(MVN) clean install -DskipTests
 	cd core && $(MVN) clean package -DskipTests
 	cd payment-miniapp && $(MVN) clean package -DskipTests
-	cd kemaless-bank && $(MVN) clean package -DskipTests
-	@echo "${GREEN}✅ Сборка завершена.${NC}"
+	cd kemaless-bank && sh $(MVN) clean package -DskipTests
+	@echo "${GREEN}Сборка завершена.${NC}"
 
 up:
-	@echo "${YELLOW}🐳 Поднимаем инфраструктуру через Docker Compose...${NC}"
+	@echo "${YELLOW}Поднимаем инфраструктуру через Docker Compose...${NC}"
 	$(DOCKER_COMPOSE) up --build -d
-	@echo "${GREEN}✅ Инфраструктура поднята.${NC}"
+	@echo "${GREEN}Инфраструктура поднята.${NC}"
 
 down:
-	@echo "${YELLOW}🛑 Останавливаем контейнеры...${NC}"
+	@echo "${YELLOW}Останавливаем контейнеры...${NC}"
 	$(DOCKER_COMPOSE) down
-	@echo "${GREEN}✅ Контейнеры остановлены.${NC}"
+	@echo "${GREEN}Контейнеры остановлены.${NC}"
 
 restart: down up
 
 clean: down
-	@echo "${YELLOW}🧹 Очищаем target директории...${NC}"
-	$(MVN) clean
-	@echo "${GREEN}✅ Очистка завершена.${NC}"
+	@echo "${YELLOW}Очищаем target директории...${NC}"
+	cd core && $(MVN) clean
+	cd miniapp-sdk && $(MVN) clean
+	cd payment-miniapp && $(MVN) clean
+	@echo "${GREEN}Очистка завершена.${NC}"
 
 clean-data: down
-	@echo "${YELLOW}⚠️ Удаляем контейнеры и ВСЕ данные (volumes)...${NC}"
+	@echo "${YELLOW}Удаляем контейнеры и все volumes...${NC}"
 	$(DOCKER_COMPOSE) down -v
-	@echo "${GREEN}✅ Данные очищены.${NC}"
+	@echo "${GREEN}Данные очищены.${NC}"
 
 logs:
 	$(DOCKER_COMPOSE) logs -f $(s)
@@ -50,12 +53,12 @@ ps:
 
 help:
 	@echo "Доступные команды:"
-	@echo "  ${YELLOW}make all${NC}        - 🚀 Полная сборка Java кода и запуск всех контейнеров (Single-Click)"
-	@echo "  ${YELLOW}make build${NC}      - 🔨 Только компиляция Java кода (mvn clean package)"
-	@echo "  ${YELLOW}make up${NC}         - 🐳 Только запуск docker-compose up -d"
-	@echo "  ${YELLOW}make down${NC}       - 🛑 Остановка всех сервисов"
-	@echo "  ${YELLOW}make restart${NC}    - 🔄 Перезапуск платформы"
-	@echo "  ${YELLOW}make logs${NC}       - 📜 Просмотр логов всех контейнеров (остановить: Ctrl+C)"
-	@echo "  ${YELLOW}make clean${NC}      - 🧹 Остановка контейнеров и удаление папок target/"
-	@echo "  ${YELLOW}make clean-data${NC} - ⚠️ Полное удаление контейнеров вместе с базами данных (volumes)"
-	@echo "  ${YELLOW}make ps${NC}         - 👀 Посмотреть статус запущенных контейнеров"
+	@echo "  ${YELLOW}make all${NC}        - Сборка Java-модулей и запуск базового Docker Compose"
+	@echo "  ${YELLOW}make build${NC}      - Сборка miniapp-sdk, core, payment-miniapp и kemaless-bank"
+	@echo "  ${YELLOW}make up${NC}         - Запуск docker compose up --build -d"
+	@echo "  ${YELLOW}make down${NC}       - Остановка контейнеров"
+	@echo "  ${YELLOW}make restart${NC}    - Перезапуск контейнеров"
+	@echo "  ${YELLOW}make logs${NC}       - Просмотр логов (опционально s=<service>)"
+	@echo "  ${YELLOW}make clean${NC}      - Остановка контейнеров и очистка target/"
+	@echo "  ${YELLOW}make clean-data${NC} - Остановка контейнеров и удаление volumes"
+	@echo "  ${YELLOW}make ps${NC}         - Статус контейнеров"

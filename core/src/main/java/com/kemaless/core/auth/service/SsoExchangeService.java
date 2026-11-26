@@ -91,7 +91,7 @@ public class SsoExchangeService {
         }
     }
 
-    @Transactional
+    @Transactional(noRollbackFor = AuthException.class)
     public TokenResponse refresh(String realmCode, MiniAppRefreshRequest request) {
         MiniAppSession session = miniAppSessionRepository.findByRefreshTokenHash(tokenHashService.hash(request.refreshToken()))
                 .orElseThrow(() -> new AuthException(INVALID_REFRESH_TOKEN_MESSAGE));
@@ -143,7 +143,16 @@ public class SsoExchangeService {
 
     private Map<String, Object> readMiniAppContext(String launchContext) {
         Object context = readLaunchContext(launchContext).get("context");
-        return context instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
+        if (!(context instanceof Map<?, ?> rawMap)) {
+            return Map.of();
+        }
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        rawMap.forEach((key, value) -> {
+            if (key != null) {
+                result.put(key.toString(), value);
+            }
+        });
+        return result;
     }
 
     private boolean isMiniAppPublished(String realmCode, String miniAppCode) {

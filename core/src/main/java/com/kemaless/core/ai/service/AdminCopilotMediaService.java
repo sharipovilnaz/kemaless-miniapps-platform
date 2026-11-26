@@ -20,6 +20,8 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.InetAddress;
+import java.net.URI;
 import java.text.Normalizer;
 import java.util.List;
 import java.util.Locale;
@@ -94,15 +96,62 @@ public class AdminCopilotMediaService {
         MimeType mimeType = MimeTypeUtils.parseMimeType(mimeTypeValue);
 
         if (attachment.objectKey() != null && !attachment.objectKey().isBlank()) {
-            Resource resource = loadFromMinio(attachment.objectKey(), attachment.fileName());
+            String objectKey = attachment.objectKey().trim();
+            if (!objectKey.startsWith("admin-copilot/") || objectKey.contains("..")) {
+                throw new IllegalArgumentException("Недопустимый objectKey вложения");
+            }
+            Resource resource = loadFromMinio(objectKey, attachment.fileName());
             return new Media(mimeType, resource);
         }
 
         if (attachment.url() != null && !attachment.url().isBlank()) {
-            return new Media(mimeType, UrlResource.from(attachment.url()));
+            URI safeUri = validateAttachmentUri(attachment.url().trim());
+            return new Media(mimeType, UrlResource.from(safeUri));
         }
 
         throw new IllegalArgumentException("Для вложения требуется objectKey или url");
+    }
+
+    private URI validateAttachmentUri(String rawUrl) {
+        URI uri;
+        try {
+            uri = URI.create(rawUrl);
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException("Некорректный URL вложения", exception);
+        }
+        String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
+        if (!"https".equals(scheme) && !"http".equals(scheme)) {
+            throw new IllegalArgumentException("Разрешены только HTTP/HTTPS URL для вложений");
+        }
+        String host = uri.getHost();
+        if (host == null || host.isBlank()) {
+            throw new IllegalArgumentException("URL вложения должен содержать host");
+        }
+        // Разрешаем URL из сконфигурированного публичного бакета MinIO, но блокируем локальные/приватные адреса против SSRF.
+        String configuredPublicBase = publicBaseUrl();
+        if (!configuredPublicBase.isEmpty() && rawUrl.startsWith(configuredPublicBase + "/")) {
+            return uri;
+        }
+        try {
+            InetAddress[] addresses = InetAddress.getAllByName(host);
+            if (addresses.length == 0) {
+                throw new IllegalArgumentException("Не удалось разрешить host вложения");
+            }
+            for (InetAddress address : addresses) {
+                if (address.isAnyLocalAddress()
+                        || address.isLoopbackAddress()
+                        || address.isLinkLocalAddress()
+                        || address.isSiteLocalAddress()
+                        || address.isMulticastAddress()) {
+                    throw new IllegalArgumentException("Запрещён доступ к локальному или приватному адресу вложения");
+                }
+            }
+        } catch (IllegalArgumentException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new IllegalArgumentException("Не удалось проверить адрес вложения", exception);
+        }
+        return uri;
     }
 
     private Resource loadFromMinio(String objectKey, String fileName) {

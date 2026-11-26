@@ -47,25 +47,32 @@ public class HostServiceJwtService {
     }
 
     public RealmClientJwtPrincipal validateAccessToken(String token) {
+        if (token == null || token.isBlank()) {
+            throw new AuthException("Invalid host service token");
+        }
         String[] parts = token.split("\\.");
         if (parts.length != 3) {
+            throw new AuthException("Invalid host service token");
+        }
+        Map<String, Object> header = parseJsonObject(parts[0]);
+        if (!"HS256".equals(header.get("alg"))) {
             throw new AuthException("Invalid host service token");
         }
         String unsignedToken = parts[0] + "." + parts[1];
         if (!MessageDigest.isEqual(sign(unsignedToken).getBytes(StandardCharsets.UTF_8), parts[2].getBytes(StandardCharsets.UTF_8))) {
             throw new AuthException("Invalid host service token");
         }
-        Map<String, Object> payload = parsePayload(parts[1]);
+        Map<String, Object> payload = parseJsonObject(parts[1]);
         if (!TOKEN_TYPE.equals(payload.get("type"))) {
             throw new AuthException("Invalid host service token");
         }
-        long expiresAt = ((Number) payload.get("exp")).longValue();
+        long expiresAt = extractExpiresAt(payload);
         if (expiresAt <= Instant.now().getEpochSecond()) {
             throw new AuthException("Host service token expired");
         }
         return new RealmClientJwtPrincipal(
-                (String) payload.get("clientId"),
-                (String) payload.get("realmCode")
+                extractRequiredString(payload, "clientId"),
+                extractRequiredString(payload, "realmCode")
         );
     }
 
@@ -79,9 +86,10 @@ public class HostServiceJwtService {
     }
 
     private String sign(String unsignedToken) {
+        byte[] keyBytes = requireSecretKeyBytes();
         try {
             Mac mac = Mac.getInstance(HMAC_SHA256);
-            mac.init(new SecretKeySpec(properties.backendSecretKey().getBytes(StandardCharsets.UTF_8), HMAC_SHA256));
+            mac.init(new SecretKeySpec(keyBytes, HMAC_SHA256));
             return Base64.getUrlEncoder().withoutPadding()
                     .encodeToString(mac.doFinal(unsignedToken.getBytes(StandardCharsets.UTF_8)));
         } catch (Exception exception) {
@@ -89,13 +97,41 @@ public class HostServiceJwtService {
         }
     }
 
-    private Map<String, Object> parsePayload(String encodedPayload) {
+    private byte[] requireSecretKeyBytes() {
+        String secret = properties.backendSecretKey();
+        if (secret == null || secret.isBlank()) {
+            throw new IllegalStateException("PLATFORM_BACKEND_SECRET_KEY must be configured");
+        }
+        byte[] bytes = secret.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length < 32) {
+            throw new IllegalStateException("PLATFORM_BACKEND_SECRET_KEY must be at least 32 bytes for HS256");
+        }
+        return bytes;
+    }
+
+    private Map<String, Object> parseJsonObject(String encoded) {
         try {
-            byte[] json = Base64.getUrlDecoder().decode(encodedPayload);
+            byte[] json = Base64.getUrlDecoder().decode(encoded);
             return objectMapper.readValue(json, new TypeReference<>() {
             });
         } catch (Exception exception) {
             throw new AuthException("Invalid host service token");
         }
+    }
+
+    private static long extractExpiresAt(Map<String, Object> payload) {
+        Object exp = payload.get("exp");
+        if (!(exp instanceof Number number)) {
+            throw new AuthException("Invalid host service token");
+        }
+        return number.longValue();
+    }
+
+    private static String extractRequiredString(Map<String, Object> payload, String key) {
+        Object value = payload.get(key);
+        if (!(value instanceof String str) || str.isBlank()) {
+            throw new AuthException("Invalid host service token");
+        }
+        return str;
     }
 }

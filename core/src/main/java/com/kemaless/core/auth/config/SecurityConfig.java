@@ -10,6 +10,7 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
@@ -28,16 +29,19 @@ import java.util.stream.Stream;
 @EnableMethodSecurity
 public class SecurityConfig {
 
-    private static final String[] PERMIT_ALL = {
+    private static final String[] PERMIT_ALL_GET = {
+            "/actuator/health",
+            "/actuator/info",
+            "/actuator/prometheus"
+    };
+
+    private static final String[] PERMIT_ALL_POST = {
             "/api/admin/auth/login",
             "/api/admin/auth/refresh",
             "/api/realms/*/auth/token",
             "/api/realms/*/sso/exchange",
             "/api/realms/*/auth/refresh",
-            "/api/realms/*/auth/introspect",
-            "/actuator/health",
-            "/actuator/info",
-            "/actuator/prometheus"
+            "/api/realms/*/auth/introspect"
     };
 
     @Bean
@@ -49,10 +53,11 @@ public class SecurityConfig {
         return http
                 .csrf(AbstractHttpConfigurer::disable)
                 .cors(cors -> cors.configurationSource(corsConfigurationSource))
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                        .requestMatchers(HttpMethod.GET, PERMIT_ALL).permitAll()
-                        .requestMatchers(HttpMethod.POST, PERMIT_ALL).permitAll()
+                        .requestMatchers(HttpMethod.GET, PERMIT_ALL_GET).permitAll()
+                        .requestMatchers(HttpMethod.POST, PERMIT_ALL_POST).permitAll()
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(realmClientJwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)

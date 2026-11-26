@@ -2,6 +2,7 @@ package com.kemaless.core.ai.controller;
 
 import java.util.List;
 
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -25,6 +26,7 @@ import jakarta.validation.Valid;
 
 @RestController
 @RequestMapping("/api/admin/copilot")
+@PreAuthorize("@adminPermissionEvaluator.canUseCopilot(authentication)")
 public class AdminCopilotController {
 
     private final AdminCopilotServiceImpl adminCopilotService;
